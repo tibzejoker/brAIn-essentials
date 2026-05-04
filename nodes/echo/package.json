@@ -13,6 +13,7 @@
     "pino": "^10.3.1"
   },
   "devDependencies": {
-    "typescript": "^5.4.0"
+    "typescript": "^5.4.0",
+    "@types/node": "^20.11.0"
   }
 }

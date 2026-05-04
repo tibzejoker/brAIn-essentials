@@ -1,0 +1,8 @@
+{
+  "name": "brAIn-essentials",
+  "private": true,
+  "license": "MIT",
+  "description": "brAIn essentials — the consciousness, the meta-node author, the MCP federation, and the primitive timer / sink nodes that every brAIn install probably wants.",
+  "scripts": { "build": "pnpm -r build" },
+  "devDependencies": { "@types/node": "^20.11.0", "typescript": "^5.4.0" }
+}
