@@ -1,0 +1,449 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>developer — author brAIn nodes at runtime</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --bg: #0f172a;
+      --panel: #111827;
+      --panel-2: #1e293b;
+      --border: #334155;
+      --text: #e2e8f0;
+      --muted: #94a3b8;
+      --accent: #a78bfa;
+      --ok: #22c55e;
+      --warn: #f59e0b;
+      --error: #ef4444;
+    }
+    html, body { height: 100%; background: var(--bg); color: var(--text); font: 13px/1.45 ui-sans-serif, system-ui, sans-serif; }
+    body { display: flex; flex-direction: column; overflow: hidden; }
+
+    header {
+      display: flex; align-items: center; gap: 12px;
+      padding: 10px 16px; border-bottom: 1px solid var(--border); background: var(--panel);
+      flex-shrink: 0;
+    }
+    header h1 { font-size: 14px; color: var(--accent); letter-spacing: 0.02em; }
+    .hint { font-size: 11px; color: var(--muted); }
+    .status { margin-left: auto; font-size: 11px; color: var(--muted); }
+
+    main {
+      flex: 1; display: grid; min-height: 0;
+      grid-template-columns: 320px 1fr 380px;
+      grid-template-rows: 1fr 220px;
+      grid-template-areas:
+        "list   tree     compose"
+        "list   progress compose";
+      gap: 1px; background: var(--border);
+    }
+    .pane { background: var(--bg); display: flex; flex-direction: column; min-height: 0; min-width: 0; }
+    .pane h2 {
+      font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em;
+      color: var(--muted); padding: 8px 12px; background: var(--panel);
+      border-bottom: 1px solid var(--border);
+      display: flex; align-items: center; gap: 8px; flex-shrink: 0;
+    }
+    .pane h2 .actions { margin-left: auto; display: flex; gap: 4px; }
+    .pane h2 button { font-size: 10px; padding: 2px 8px; }
+    .pane-body { flex: 1; overflow: auto; min-height: 0; }
+
+    .list { grid-area: list; }
+    .tree { grid-area: tree; }
+    .progress { grid-area: progress; }
+    .compose { grid-area: compose; }
+
+    select, input[type=text], textarea, button {
+      background: var(--bg); color: var(--text); border: 1px solid var(--border);
+      border-radius: 4px; font: inherit; font-size: 12px; padding: 6px 10px;
+      font-family: inherit;
+    }
+    select:hover, button:hover:not(:disabled) { border-color: var(--accent); }
+    button { cursor: pointer; }
+    button:disabled { opacity: 0.4; cursor: not-allowed; }
+    button.primary { background: var(--accent); color: #0f172a; border-color: var(--accent); font-weight: 600; }
+    button.primary:hover:not(:disabled) { background: #8b5cf6; }
+    button.ghost { background: transparent; color: var(--muted); }
+    button.ghost:hover { color: var(--text); }
+    textarea { width: 100%; resize: none; padding: 8px 10px; line-height: 1.4; }
+
+    /* — workspaces list — */
+    .ws { padding: 10px 12px; border-bottom: 1px solid var(--border); cursor: pointer; }
+    .ws:hover { background: var(--panel); }
+    .ws.selected { background: var(--panel-2); border-left: 2px solid var(--accent); padding-left: 10px; }
+    .ws .top { display: flex; align-items: center; gap: 6px; }
+    .ws .slug { font-family: ui-monospace, monospace; font-size: 11px; color: var(--muted); }
+    .ws .name { font-weight: 600; font-size: 13px; flex: 1; }
+    .ws .badges { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 4px; }
+    .badge { font-size: 10px; padding: 1px 6px; border-radius: 8px; border: 1px solid var(--border); }
+    .badge.ok { color: var(--ok); border-color: rgba(34,197,94,0.4); }
+    .badge.warn { color: var(--warn); border-color: rgba(245,158,11,0.4); }
+    .badge.muted { color: var(--muted); }
+    .badge.live { color: var(--accent); border-color: rgba(167,139,250,0.4); }
+
+    /* — file tree — */
+    .tree-list { padding: 8px 12px; font: 12px ui-monospace, monospace; }
+    .tree-list .row { display: flex; gap: 6px; padding: 1px 0; }
+    .tree-list .row .icon { width: 16px; flex-shrink: 0; color: var(--muted); }
+    .tree-list .row.dir > .icon { color: var(--accent); }
+    .tree-list .row .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .tree-list .row .meta { color: var(--muted); font-size: 10px; }
+    .tree-list .indent { padding-left: 16px; border-left: 1px dashed var(--border); margin-left: 6px; }
+
+    /* — progress — */
+    .progress-log {
+      padding: 8px 12px; font: 11px ui-monospace, monospace;
+      white-space: pre-wrap; word-break: break-word;
+    }
+    .progress-line { padding: 1px 0; color: var(--muted); }
+    .progress-line.event { color: var(--accent); font-weight: 600; }
+    .progress-line.error { color: var(--error); }
+
+    /* — compose — */
+    .compose-body { padding: 12px; display: flex; flex-direction: column; gap: 10px; min-height: 0; }
+    .compose-body label { font-size: 11px; color: var(--muted); }
+    .row-flex { display: flex; gap: 8px; align-items: center; }
+    .row-flex select { flex: 1; }
+
+    .empty { color: var(--muted); font-style: italic; padding: 16px; text-align: center; font-size: 12px; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>developer</h1>
+    <div class="hint">Author brAIn nodes at runtime via a code-writing CLI.</div>
+    <div class="status" id="status">connecting…</div>
+  </header>
+
+  <main>
+    <!-- workspaces list -->
+    <div class="pane list">
+      <h2>Workspaces
+        <div class="actions">
+          <button id="refresh-list" class="ghost" title="Re-scan nodes/_dynamic/">↻</button>
+        </div>
+      </h2>
+      <div class="pane-body" id="ws-list">
+        <div class="empty">No workspaces yet.</div>
+      </div>
+    </div>
+
+    <!-- file tree -->
+    <div class="pane tree">
+      <h2><span id="tree-title">Files</span>
+        <div class="actions">
+          <button id="refresh-tree" class="ghost" title="Refresh file tree">↻</button>
+        </div>
+      </h2>
+      <div class="pane-body" id="tree-body">
+        <div class="empty">Pick a workspace on the left.</div>
+      </div>
+    </div>
+
+    <!-- progress -->
+    <div class="pane progress">
+      <h2><span id="progress-title">Live progress</span>
+        <div class="actions">
+          <button id="clear-progress" class="ghost" title="Clear log">clear</button>
+        </div>
+      </h2>
+      <div class="pane-body progress-log" id="progress-body">
+        <div class="empty">Idle. Author or improve a node to see the CLI's output.</div>
+      </div>
+    </div>
+
+    <!-- compose -->
+    <div class="pane compose">
+      <h2>Compose</h2>
+      <div class="compose-body">
+        <div class="row-flex">
+          <label for="cli-select">CLI</label>
+          <select id="cli-select"><option>loading…</option></select>
+        </div>
+        <label for="prompt">Description (create) or change request (improve)</label>
+        <textarea id="prompt" rows="6" placeholder="A node that subscribes to clock.tick and prints the time…"></textarea>
+        <div class="row-flex" style="gap: 6px;">
+          <button id="btn-create" class="primary" style="flex: 1;">+ Create</button>
+          <button id="btn-improve" id="improve" style="flex: 1;" disabled>↗ Improve selected</button>
+        </div>
+        <div class="hint" id="compose-status"></div>
+      </div>
+    </div>
+  </main>
+
+  <script>
+    const nodeId = window.location.pathname.split('/nodes/')[1]?.split('/ui')[0];
+    const apiBase = window.location.origin;
+
+    const els = {
+      status: document.getElementById('status'),
+      wsList: document.getElementById('ws-list'),
+      treeTitle: document.getElementById('tree-title'),
+      treeBody: document.getElementById('tree-body'),
+      refreshList: document.getElementById('refresh-list'),
+      refreshTree: document.getElementById('refresh-tree'),
+      progressTitle: document.getElementById('progress-title'),
+      progressBody: document.getElementById('progress-body'),
+      clearProgress: document.getElementById('clear-progress'),
+      cliSelect: document.getElementById('cli-select'),
+      prompt: document.getElementById('prompt'),
+      btnCreate: document.getElementById('btn-create'),
+      btnImprove: document.getElementById('btn-improve'),
+      composeStatus: document.getElementById('compose-status'),
+    };
+
+    let selectedSlug = null;
+    let lastMessageId = null;
+    let workspaces = [];
+
+    function escapeHtml(s) {
+      return String(s ?? '').replace(/[&<>"']/g, (c) => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+      }[c]));
+    }
+
+    function fmtTime(ms) {
+      if (!ms) return '';
+      const d = new Date(ms);
+      return d.toLocaleTimeString();
+    }
+
+    // ── outgoing: drive our own subscriptions via /send with system origin ────
+    async function send(topic, body, criticality = 4) {
+      try {
+        const payload = {
+          topic,
+          content: typeof body === 'string' ? body : JSON.stringify(body),
+          criticality,
+          from: 'system.dev-ui',
+          metadata: typeof body === 'object' ? body : undefined,
+        };
+        const res = await fetch(`${apiBase}/nodes/${nodeId}/ui/send`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      } catch (e) {
+        els.composeStatus.textContent = `send failed: ${e.message}`;
+      }
+    }
+
+    // ── polling ───────────────────────────────────────────────────────────────
+    async function pollMessages() {
+      try {
+        const res = await fetch(`${apiBase}/nodes/${nodeId}/ui/messages`);
+        if (!res.ok) { els.status.textContent = 'node not running'; return; }
+        const messages = await res.json();
+        els.status.textContent = `${messages.length} bus events tracked`;
+        let startIdx = 0;
+        if (lastMessageId) {
+          const idx = messages.findIndex((m) => m.id === lastMessageId);
+          if (idx >= 0) startIdx = idx + 1;
+        }
+        for (const msg of messages.slice(startIdx)) {
+          dispatch(msg);
+          lastMessageId = msg.id;
+        }
+      } catch (e) {
+        els.status.textContent = 'disconnected';
+      }
+    }
+
+    function dispatch(msg) {
+      const meta = msg.metadata || {};
+      switch (msg.topic) {
+        case 'dev.workspaces':
+          if (Array.isArray(meta.items)) renderWorkspaces(meta.items);
+          break;
+        case 'dev.files':
+          if (meta.slug === selectedSlug && Array.isArray(meta.tree)) renderTree(meta.tree);
+          break;
+        case 'dev.cli.available':
+          if (Array.isArray(meta.clis)) renderClis(meta.clis, meta.default);
+          break;
+        case 'dev.progress':
+          if (!meta.slug) break;
+          if (selectedSlug && meta.slug !== selectedSlug) break;
+          appendProgress(meta);
+          break;
+        case 'dev.spawned':
+          appendProgress({
+            slug: meta.slug,
+            lines: [`★ spawned instance ${meta.instance_id ?? '?'} for type ${meta.type_name ?? '?'}` + (meta.error ? ` (error: ${meta.error})` : '')],
+            ts: msg.timestamp ? new Date(msg.timestamp).toISOString() : null,
+          }, 'event');
+          requestList();
+          break;
+        case 'dev.result':
+          appendProgress({
+            slug: tryParseSlug(msg),
+            lines: [`▣ result: ${(msg.payload?.content || '').slice(0, 200)}`],
+          }, 'event');
+          requestList();
+          break;
+      }
+    }
+
+    function tryParseSlug(msg) {
+      try {
+        const p = JSON.parse(msg.payload?.content ?? '');
+        return p?.slug ?? null;
+      } catch { return null; }
+    }
+
+    // ── workspaces panel ──────────────────────────────────────────────────────
+    function renderWorkspaces(items) {
+      workspaces = items;
+      if (items.length === 0) {
+        els.wsList.innerHTML = '<div class="empty">No workspaces yet — use Compose to create one.</div>';
+        els.btnImprove.disabled = true;
+        return;
+      }
+      els.wsList.innerHTML = '';
+      for (const ws of items) {
+        const div = document.createElement('div');
+        div.className = `ws${selectedSlug === ws.slug ? ' selected' : ''}`;
+        div.dataset.slug = ws.slug;
+        const badges = [];
+        if (ws.in_progress) badges.push('<span class="badge warn">working…</span>');
+        if (ws.registered) badges.push('<span class="badge ok">registered</span>');
+        else badges.push('<span class="badge muted">not yet registered</span>');
+        if (ws.instance_id) badges.push('<span class="badge live">live</span>');
+        div.innerHTML = `
+          <div class="top">
+            <span class="name">${escapeHtml(ws.type_name || ws.slug)}</span>
+          </div>
+          <div class="slug">${escapeHtml(ws.slug)} · ${ws.files_count} files</div>
+          <div class="badges">${badges.join('')}</div>
+        `;
+        div.addEventListener('click', () => selectWorkspace(ws.slug));
+        els.wsList.appendChild(div);
+      }
+      els.btnImprove.disabled = !selectedSlug || !workspaces.find((w) => w.slug === selectedSlug);
+    }
+
+    function selectWorkspace(slug) {
+      selectedSlug = slug;
+      const ws = workspaces.find((w) => w.slug === slug);
+      els.treeTitle.textContent = ws?.type_name ? `Files — ${ws.type_name}` : `Files — ${slug}`;
+      els.progressTitle.textContent = `Live progress — ${slug}`;
+      els.btnImprove.disabled = false;
+      requestTree();
+      // highlight in the list without re-fetching
+      els.wsList.querySelectorAll('.ws').forEach((el) => {
+        el.classList.toggle('selected', el.dataset.slug === slug);
+      });
+    }
+
+    // ── tree panel ────────────────────────────────────────────────────────────
+    function renderTree(tree) {
+      if (!tree.length) {
+        els.treeBody.innerHTML = '<div class="empty">Empty workspace.</div>';
+        return;
+      }
+      const wrap = document.createElement('div');
+      wrap.className = 'tree-list';
+      wrap.appendChild(renderNodes(tree));
+      els.treeBody.replaceChildren(wrap);
+    }
+
+    function renderNodes(nodes) {
+      const frag = document.createDocumentFragment();
+      for (const n of nodes) {
+        const row = document.createElement('div');
+        row.className = `row ${n.is_dir ? 'dir' : 'file'}`;
+        const icon = n.is_dir ? '▸' : '·';
+        const meta = n.is_dir ? '' : (n.size ? ` ${n.size} B` : '');
+        row.innerHTML = `<span class="icon">${icon}</span><span class="name">${escapeHtml(n.name)}</span><span class="meta">${meta}</span>`;
+        frag.appendChild(row);
+        if (n.is_dir && n.children?.length) {
+          const child = document.createElement('div');
+          child.className = 'indent';
+          child.appendChild(renderNodes(n.children));
+          frag.appendChild(child);
+        }
+      }
+      return frag;
+    }
+
+    // ── progress panel ────────────────────────────────────────────────────────
+    function appendProgress(meta, klass = '') {
+      const empty = els.progressBody.querySelector('.empty');
+      empty?.remove();
+      const lines = Array.isArray(meta.lines) ? meta.lines : [String(meta.lines ?? '')];
+      const t = meta.ts ? `[${new Date(meta.ts).toLocaleTimeString()}]` : '';
+      for (const line of lines) {
+        const div = document.createElement('div');
+        const cssClass = klass || (line.includes('[stderr]') || line.includes('error') ? 'error' : '');
+        div.className = `progress-line ${cssClass}`;
+        div.textContent = `${t} ${line}`.trim();
+        els.progressBody.appendChild(div);
+      }
+      while (els.progressBody.children.length > 400) els.progressBody.firstChild.remove();
+      els.progressBody.scrollTop = els.progressBody.scrollHeight;
+    }
+
+    els.clearProgress.addEventListener('click', () => {
+      els.progressBody.innerHTML = '<div class="empty">Idle.</div>';
+    });
+
+    // ── CLI dropdown ──────────────────────────────────────────────────────────
+    function renderClis(clis, def) {
+      els.cliSelect.innerHTML = '';
+      if (!clis.length) {
+        els.cliSelect.innerHTML = '<option value="">none available</option>';
+        els.btnCreate.disabled = true;
+        els.btnImprove.disabled = true;
+        return;
+      }
+      for (const c of clis) {
+        const opt = document.createElement('option');
+        opt.value = c;
+        opt.textContent = c;
+        if (c === def) opt.selected = true;
+        els.cliSelect.appendChild(opt);
+      }
+      els.btnCreate.disabled = false;
+    }
+
+    // ── triggers ──────────────────────────────────────────────────────────────
+    function requestList() { send('dev.workspaces.list', {}); }
+    function requestTree() { if (selectedSlug) send('dev.files.tree', { slug: selectedSlug }); }
+    function requestClis() { send('dev.cli.list', {}); }
+
+    els.refreshList.addEventListener('click', requestList);
+    els.refreshTree.addEventListener('click', requestTree);
+
+    els.btnCreate.addEventListener('click', () => {
+      const text = els.prompt.value.trim();
+      if (!text) return;
+      const cli = els.cliSelect.value;
+      els.composeStatus.textContent = 'submitted';
+      send('dev.request', { content: text, cli }, 5);
+      // The send envelope sets metadata to the body object — handler picks
+      // metadata.cli over config_overrides. We also forward `content` as
+      // the canonical free-text payload.
+      els.prompt.value = '';
+    });
+
+    els.btnImprove.addEventListener('click', () => {
+      if (!selectedSlug) return;
+      const text = els.prompt.value.trim();
+      if (!text) return;
+      const cli = els.cliSelect.value;
+      els.composeStatus.textContent = `improving ${selectedSlug}`;
+      send('dev.improve', { slug: selectedSlug, request: text, cli }, 5);
+      els.prompt.value = '';
+    });
+
+    // ── boot ──────────────────────────────────────────────────────────────────
+    requestClis();
+    requestList();
+    setInterval(pollMessages, 1500);
+    setInterval(requestList, 8000); // periodic refresh — picks up external spawn/kill
+    pollMessages();
+  </script>
+</body>
+</html>

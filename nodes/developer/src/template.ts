@@ -153,6 +153,43 @@ describe("my-node handler", () => {
   with \`{slug, phase: "install"|"compile"|"missing_tests"|"tests"|"config", errors}\`.
 - You — the developer node — listen for that topic and correct the workspace.
 
+## Topic conventions (CRITICAL — read before picking publish/subscribe topics)
+
+Topics are NATS subjects. Two wildcard rules every node author must keep in mind:
+
+- \`*\` matches **exactly one** segment. \`chat.response.*\` matches \`chat.response.brain\`
+  but does NOT match \`chat.response\` (no trailing segment).
+- \`>\` matches **one or more** segments at the tail. \`memory.>\` matches
+  \`memory.write\` and \`memory.vector.upsert\`.
+
+If you publish a "bare" topic like \`chat.response\` while a subscriber listens on
+\`chat.response.*\`, your message goes into the void. **Always publish on the
+fully-qualified topic the subscribers expect.**
+
+### Well-known topics in the brAIn network
+
+When asked to integrate with the existing network, use these exact topics:
+
+| If you want to… | Subscribe to | Publish on |
+|---|---|---|
+| React to a human chat message | \`chat.input\` | \`chat.response.<your-node-name>\` (NOT \`chat.response\`) |
+| Speak text aloud through the OS TTS node | — | \`tts.speak\` (text in payload, optional \`voice\`/\`rate\` in metadata) |
+| Use voice transcripts | \`voice.transcript\` | — |
+| Use gaze-resolved targets | \`gaze.target.resolved\` | — |
+| Use the intent correlator's output | \`intent.detected\` | — |
+| Drive a phone running brAIn-mobile | — | \`mobile.<deviceId>.tts.speak\` / \`mobile.<deviceId>.flash\` |
+| Read phone sensors | \`mobile.<deviceId>.sensor.accel\` etc. | — |
+
+Pattern: when you produce something for a known consumer (chat, brain, …),
+**append a unique segment** identifying yourself (\`chat.response.mockery-bot\`,
+\`chat.response.weather\`, …). When you consume from a known producer, subscribe
+to the exact published topic.
+
+If the request mentions "chat" / "réponds dans le chat" / "answer the user", the
+correct publish topic is \`chat.response.<your-node-name>\`. The chat node's
+subscription is \`chat.response.*\` (verify in \`brAIn-ui/nodes/chat/config.json\`)
+— a bare \`chat.response\` will NOT reach the UI.
+
 ## Other conventions
 
 - NO \`console.log\` (lint-banned). If logging is truly needed, use \`ctx.log(...)\`
