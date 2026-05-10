@@ -46,7 +46,7 @@ validation feedback.
   "dependencies": { "@brain/sdk": "workspace:*" },
   "devDependencies": {
     "typescript": "^5.4.0",
-    "vitest": "^4.1.4",
+    "vitest": "^3.2.4",
     "@types/node": "^20.11.0"
   }
 }
@@ -55,16 +55,16 @@ validation feedback.
 Add \`"@brain/core": "workspace:*"\` to dependencies ONLY if you actually use core
 helpers (LLMRegistry, logger, etc.). Otherwise keep it out — the SDK types are enough.
 
-### 3. tsconfig.json
+### 3. tsconfig.json (COPY EXACTLY — wrong rootDir means dist/src/handler.js instead of dist/handler.js, framework rejects)
 \`\`\`json
 {
   "extends": "../../../tsconfig.base.json",
-  "compilerOptions": { "outDir": "./dist", "rootDir": "." },
-  "include": ["src", "tests"]
+  "compilerOptions": { "outDir": "./dist", "rootDir": "./src" },
+  "include": ["src"]
 }
 \`\`\`
 
-Note \`rootDir: "."\` and including \`tests\` — tsc validates test files too, catching type errors early.
+CRITICAL: \`rootDir\` MUST be \`"./src"\` (not \`"."\`) and \`include\` MUST be \`["src"]\` (NOT \`["src", "tests"]\`). Otherwise tsc emits \`dist/src/handler.js\` and the framework can't load \`dist/handler.js\`. Tests are run by vitest separately — they don't need to be in tsconfig.
 
 ### 4. vitest.config.ts
 \`\`\`typescript

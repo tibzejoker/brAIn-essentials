@@ -26,6 +26,30 @@ interface WorkspacesState {
   [slug: string]: WorkspaceMeta;
 }
 
+/**
+ * Persistent record of a node this dev instance has authored. Survives
+ * across handler invocations / restarts via ctx.state — that's the dev
+ * node's own little DB of "what I made". Used to:
+ *   - Decide which on-disk workspaces dev.workspaces.list should flag
+ *     as `created_by_me` vs found-on-disk-but-not-by-me.
+ *   - Soft-validate dev.improve targets — warn (not block) if asked
+ *     to improve a workspace this dev didn't create.
+ */
+interface CreatedRecord {
+  slug: string;
+  type_name: string;
+  request: string;
+  cli: string;
+  created_at: number;
+  attempts: number;
+  improvements: number;
+  last_modified_at: number;
+}
+
+interface CreatedRegistry {
+  [slug: string]: CreatedRecord;
+}
+
 interface ValidationPayload {
   slug?: string;
   type_name?: string;
@@ -56,20 +80,34 @@ function getConfig(overrides: Record<string, unknown>): DevConfig {
  * `pnpm-workspace.yaml`, so just looking for that lands in the wrong
  * place when this node ships from `brAIn-essentials`.
  *
- * Walks up from `__dirname` first; if that fails (loose install layout),
- * falls back to `process.cwd()` and walks again. Last resort: `cwd`.
+ * For the standard `npm create brain` layout the developer node lives
+ * at `brain/storeprojects/brAIn-essentials/nodes/developer/`, so the
+ * framework root (`brain/brAIn/`) is a SIBLING of an ancestor — never
+ * an ancestor itself. We walk up from __dirname AND check each level's
+ * `brAIn/` subdirectory for the SDK marker. cwd is the last fallback
+ * for the case where this is invoked from inside the framework root.
  */
 export function resolveMonorepoRoot(start: string = __dirname): string {
+  function isFrameworkRoot(d: string): boolean {
+    const sdkPkg = path.join(d, "packages", "sdk", "package.json");
+    if (!fs.existsSync(sdkPkg)) return false;
+    try {
+      const pkg = JSON.parse(fs.readFileSync(sdkPkg, "utf-8")) as { name?: string };
+      return pkg.name === "@brain/sdk";
+    } catch { return false; }
+  }
+
   for (const origin of [start, process.cwd()]) {
     let dir = origin;
     for (let i = 0; i < 12; i++) {
-      const sdkPkg = path.join(dir, "packages", "sdk", "package.json");
-      if (fs.existsSync(sdkPkg)) {
-        try {
-          const pkg = JSON.parse(fs.readFileSync(sdkPkg, "utf-8")) as { name?: string };
-          if (pkg.name === "@brain/sdk") return dir;
-        } catch { /* keep walking */ }
-      }
+      // Direct match: this dir IS the framework root.
+      if (isFrameworkRoot(dir)) return dir;
+      // Sibling match: this dir's `brAIn/` child IS the framework root.
+      // Handles the canonical `npm create brain` layout where the dev
+      // node is buried under `storeprojects/`.
+      const siblingFramework = path.join(dir, "brAIn");
+      if (isFrameworkRoot(siblingFramework)) return siblingFramework;
+
       const parent = path.dirname(dir);
       if (parent === dir) break;
       dir = parent;
@@ -81,6 +119,11 @@ export function resolveMonorepoRoot(start: string = __dirname): string {
 function getWorkspaces(state: Record<string, unknown>): WorkspacesState {
   if (!state.workspaces) state.workspaces = {};
   return state.workspaces as WorkspacesState;
+}
+
+function getCreated(state: Record<string, unknown>): CreatedRegistry {
+  if (!state.created) state.created = {};
+  return state.created as CreatedRegistry;
 }
 
 function parseValidationPayload(msg: Message): ValidationPayload {
@@ -111,6 +154,20 @@ export function pickCli(overrides: Record<string, unknown>, msgMeta: Record<stri
   return (overrides.cli as string | undefined) ?? "claude";
 }
 
+/**
+ * Build CLI args for the supported code-authoring CLIs. All three accept
+ * a prompt on stdin via `-p -`. Claude additionally takes turn caps and
+ * the auto-permission bypass; codex/gemini reject those flags.
+ */
+export function buildCliArgs(cli: string): string[] {
+  const stdinPrompt = ["-p", "-"];
+  if (cli === "claude") {
+    return [...stdinPrompt, "--max-turns", "40", "--dangerously-skip-permissions"];
+  }
+  // codex/gemini and any unknown CLI: stick to the portable subset.
+  return stdinPrompt;
+}
+
 function runCli(
   cli: string,
   prompt: string,
@@ -120,16 +177,20 @@ function runCli(
   signal: AbortSignal,
 ): Promise<{ stdout: string; exitCode: number }> {
   return new Promise((resolve) => {
-    const tmpFile = path.join(cwd, ".prompt.tmp");
-    fs.writeFileSync(tmpFile, prompt, "utf-8");
+    // Direct spawn (no `sh -c` wrapper) so this works on Windows where
+    // sh isn't in PATH. shell:true on win32 lets `.cmd` shims resolve.
+    // Prompt goes via stdin — no temp file needed, no leak risk.
+    const proc = spawn(cli, buildCliArgs(cli), {
+      cwd,
+      timeout: timeoutMs,
+      signal,
+      stdio: ["pipe", "pipe", "pipe"],
+      shell: process.platform === "win32",
+    });
 
-    const proc = spawn(
-      "sh",
-      ["-c", `cat "${tmpFile}" | ${cli} -p - --max-turns 40 --dangerously-skip-permissions`],
-      // signal: SIGTERM to the shell + the CLI agent on preemption,
-      // matching the runner's per-iteration AbortController.
-      { cwd, timeout: timeoutMs, signal },
-    );
+    proc.stdin.on("error", () => { /* CLI may close stdin early — ignore EPIPE */ });
+    proc.stdin.write(prompt);
+    proc.stdin.end();
 
     let stdout = "";
     proc.stdout.on("data", (chunk: Buffer) => {
@@ -140,13 +201,9 @@ function runCli(
     proc.stderr.on("data", (chunk: Buffer) => {
       for (const line of chunk.toString().split("\n").filter(Boolean)) onLine(`[stderr] ${line}`);
     });
-    proc.on("close", (code) => {
-      try { fs.unlinkSync(tmpFile); } catch { /* ignore */ }
-      resolve({ stdout, exitCode: code ?? 1 });
-    });
+    proc.on("close", (code) => resolve({ stdout, exitCode: code ?? 1 }));
     proc.on("error", (err) => {
       onLine(`[error] ${err.message}`);
-      try { fs.unlinkSync(tmpFile); } catch { /* ignore */ }
       resolve({ stdout, exitCode: 1 });
     });
   });
@@ -317,6 +374,7 @@ async function handleImproveRequest(
   ctx: NodeContext,
   msg: Message,
   workspaces: WorkspacesState,
+  created: CreatedRegistry,
   config: DevConfig,
   cliRegistry: CLIRegistry,
   monorepoRoot: string,
@@ -344,6 +402,13 @@ async function handleImproveRequest(
     return;
   }
 
+  // Soft check — the dev's persistent registry of "things I made". Not a
+  // hard block: a fresh dev instance (state wiped, workspace still on
+  // disk) should still be able to improve. Just surface the mismatch.
+  if (!(slug in created)) {
+    ctx.log("warn", `[${slug}] improve target not in created-by-me registry — proceeding anyway`);
+  }
+
   const ws: WorkspaceMeta = {
     slug, path: workspacePath,
     caller: msg.from, attempts: 0, request,
@@ -358,6 +423,7 @@ async function handleValidationFeedback(
   ctx: NodeContext,
   msg: Message,
   workspaces: WorkspacesState,
+  created: CreatedRegistry,
   config: DevConfig,
 ): Promise<void> {
   const data = parseValidationPayload(msg);
@@ -377,12 +443,6 @@ async function handleValidationFeedback(
           type: data.type_name,
           name: data.type_name,
         });
-        ctx.publish("dev.spawned", {
-          type: "text",
-          criticality: 1,
-          payload: { content: JSON.stringify({ slug: ws.slug, type_name: data.type_name, instance_id: instance.id }) },
-          metadata: { slug: ws.slug, type_name: data.type_name, instance_id: instance.id, mode: ws.mode },
-        });
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         ctx.log("warn", `[${ws.slug}] auto-spawn failed: ${message}`);
@@ -392,6 +452,60 @@ async function handleValidationFeedback(
           payload: { content: JSON.stringify({ slug: ws.slug, type_name: data.type_name, error: message }) },
           metadata: { slug: ws.slug, type_name: data.type_name, error: message, mode: ws.mode },
         });
+      }
+
+      // Rename `dev-<uuid>` → `<type_name>-<short_id>` for readability.
+      // Done AFTER spawn so the in-memory handler is loaded from the old
+      // path; framework re-scan on restart picks up the new name cleanly.
+      const oldSlug = ws.slug;
+      const shortId = oldSlug.replace(/^dev-/, "").slice(0, 8);
+      const sanitized = data.type_name.replace(/[^a-z0-9-]/gi, "-").toLowerCase().slice(0, 32);
+      const newSlug = `${sanitized}-${shortId}`;
+      const newPath = path.join(path.dirname(ws.path), newSlug);
+      if (newSlug !== oldSlug && !fs.existsSync(newPath)) {
+        try {
+          fs.renameSync(ws.path, newPath);
+          ws.path = newPath;
+          ws.slug = newSlug;
+        } catch (err) {
+          ctx.log("warn", `[${oldSlug}] rename to ${newSlug} failed: ${String(err)} — keeping old slug`);
+        }
+      }
+
+      if (instance) {
+        ctx.publish("dev.spawned", {
+          type: "text",
+          criticality: 1,
+          payload: { content: JSON.stringify({ slug: ws.slug, type_name: data.type_name, instance_id: instance.id }) },
+          metadata: { slug: ws.slug, type_name: data.type_name, instance_id: instance.id, mode: ws.mode },
+        });
+      }
+    }
+
+    // Persistent "I made this" record — survives restarts.
+    if (data.type_name) {
+      const now = Date.now();
+      if (msg.topic === "types.registered") {
+        created[ws.slug] = {
+          slug: ws.slug,
+          type_name: data.type_name,
+          request: ws.request,
+          cli: ws.cli,
+          created_at: now,
+          attempts: ws.attempts,
+          improvements: 0,
+          last_modified_at: now,
+        };
+      } else {
+        // types.updated — bump the existing record (or seed it if the
+        // dev was restarted between create and improve).
+        const existing = created[ws.slug];
+        created[ws.slug] = existing
+          ? { ...existing, improvements: existing.improvements + 1, attempts: ws.attempts, last_modified_at: now }
+          : {
+              slug: ws.slug, type_name: data.type_name, request: ws.request, cli: ws.cli,
+              created_at: now, attempts: ws.attempts, improvements: 1, last_modified_at: now,
+            };
       }
     }
 
@@ -404,7 +518,10 @@ async function handleValidationFeedback(
       mode: ws.mode,
       instance_id: instance?.id ?? null,
     }));
-    delete workspaces[ws.slug];
+    // data.slug is the framework's view (pre-rename) — that's the key
+    // we used to insert into workspaces. ws.slug may have changed via
+    // the post-spawn rename above.
+    delete workspaces[data.slug];
     return;
   }
 
@@ -438,6 +555,10 @@ interface WorkspaceSnapshot {
   attempts: number;
   files_count: number;
   modified_at: number;
+  /** True when this slug is in this dev node's persistent created-by-me registry. */
+  created_by_me: boolean;
+  /** Number of dev.improve cycles applied to this node (0 if pristine). */
+  improvements: number;
 }
 
 function readTypeName(workspacePath: string): string | null {
@@ -458,14 +579,22 @@ function countFiles(dir: string, depthLeft = 4): number {
   return n;
 }
 
-function snapshotWorkspaces(monorepoRoot: string, workspaces: WorkspacesState): WorkspaceSnapshot[] {
+function snapshotWorkspaces(
+  monorepoRoot: string,
+  workspaces: WorkspacesState,
+  created: CreatedRegistry,
+): WorkspaceSnapshot[] {
   const dynamicDir = path.join(monorepoRoot, "nodes", "_dynamic");
   if (!fs.existsSync(dynamicDir)) return [];
   const brain = BrainService.current;
   const out: WorkspaceSnapshot[] = [];
   for (const e of fs.readdirSync(dynamicDir, { withFileTypes: true })) {
     if (!e.isDirectory()) continue;
-    if (!e.name.startsWith("dev-")) continue;
+    // Include if: (a) in-progress (still has the dev- prefix from before
+    // post-spawn rename), OR (b) recorded in our created registry (the
+    // post-rename `<type_name>-<id>` form).
+    const isOurs = e.name.startsWith("dev-") || e.name in created || e.name in workspaces;
+    if (!isOurs) continue;
     const wsPath = path.join(dynamicDir, e.name);
     if (!fs.existsSync(path.join(wsPath, "config.json"))) continue;
     const typeName = readTypeName(wsPath);
@@ -475,6 +604,7 @@ function snapshotWorkspaces(monorepoRoot: string, workspaces: WorkspacesState): 
       : null;
     let modifiedAt = 0;
     try { modifiedAt = fs.statSync(wsPath).mtimeMs; } catch { /* ignore */ }
+    const rec = created[e.name];
     out.push({
       slug: e.name,
       path: wsPath,
@@ -482,9 +612,11 @@ function snapshotWorkspaces(monorepoRoot: string, workspaces: WorkspacesState): 
       registered,
       instance_id: liveInstance?.id ?? null,
       in_progress: e.name in workspaces,
-      attempts: workspaces[e.name]?.attempts ?? 0,
+      attempts: workspaces[e.name]?.attempts ?? rec?.attempts ?? 0,
       files_count: countFiles(wsPath),
       modified_at: modifiedAt,
+      created_by_me: rec !== undefined,
+      improvements: rec?.improvements ?? 0,
     });
   }
   return out.sort((a, b) => b.modified_at - a.modified_at);
@@ -530,8 +662,13 @@ export function readTree(root: string, rel = "", depthLeft = 5): FileNode[] {
   return out;
 }
 
-function publishWorkspaces(ctx: NodeContext, monorepoRoot: string, workspaces: WorkspacesState): void {
-  const items = snapshotWorkspaces(monorepoRoot, workspaces);
+function publishWorkspaces(
+  ctx: NodeContext,
+  monorepoRoot: string,
+  workspaces: WorkspacesState,
+  created: CreatedRegistry,
+): void {
+  const items = snapshotWorkspaces(monorepoRoot, workspaces, created);
   ctx.publish("dev.workspaces", {
     type: "text",
     criticality: 1,
@@ -592,10 +729,11 @@ export const handler: NodeHandler = async (ctx) => {
   await cliRegistry.initialize();
   const monorepoRoot = resolveMonorepoRoot();
   const workspaces = getWorkspaces(ctx.state);
+  const created = getCreated(ctx.state);
 
   for (const msg of ctx.messages) {
     if (msg.topic === "dev.workspaces.list") {
-      publishWorkspaces(ctx, monorepoRoot, workspaces);
+      publishWorkspaces(ctx, monorepoRoot, workspaces, created);
       continue;
     }
     if (msg.topic === "dev.files.tree") {
@@ -607,13 +745,13 @@ export const handler: NodeHandler = async (ctx) => {
       continue;
     }
     if (msg.topic === "dev.improve") {
-      await handleImproveRequest(ctx, msg, workspaces, config, cliRegistry, monorepoRoot);
+      await handleImproveRequest(ctx, msg, workspaces, created, config, cliRegistry, monorepoRoot);
       continue;
     }
     if (msg.topic.startsWith("types.")) {
-      await handleValidationFeedback(ctx, msg, workspaces, config);
+      await handleValidationFeedback(ctx, msg, workspaces, created, config);
       // Network changed — refresh the workspaces list for any UI listening.
-      publishWorkspaces(ctx, monorepoRoot, workspaces);
+      publishWorkspaces(ctx, monorepoRoot, workspaces, created);
       continue;
     }
     // Default: any other message is a "create new node" request. Keeps
