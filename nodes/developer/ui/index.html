@@ -4,6 +4,12 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>developer — author brAIn nodes at runtime</title>
+  <!-- Monaco (VSCode's editor) for file content. marked + hljs for the
+       lighter contexts: transcripts as markdown + git diffs as `language=diff`. -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/styles/github-dark.min.css" />
+  <script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/highlight.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/monaco-editor@0.45.0/min/vs/loader.js"></script>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     :root {
@@ -108,6 +114,73 @@
     .row-flex select { flex: 1; }
 
     .empty { color: var(--muted); font-style: italic; padding: 16px; text-align: center; font-size: 12px; }
+
+    /* — tabs (in tree pane h2) — */
+    .tabs { display: flex; gap: 0; flex: 1; }
+    .tab {
+      font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em;
+      padding: 4px 10px; border-radius: 4px; cursor: pointer;
+      color: var(--muted); background: transparent; border: 1px solid transparent;
+    }
+    .tab:hover { color: var(--text); }
+    .tab.active { color: var(--accent); background: var(--bg); border-color: var(--border); }
+
+    /* — clickable rows (file tree, transcripts, git) — */
+    .tree-list .row.file, .tree-list .row.entry { cursor: pointer; }
+    .tree-list .row.file:hover, .tree-list .row.entry:hover { background: var(--panel); }
+
+    /* — modal — */
+    .modal-bg {
+      position: fixed; inset: 0; background: rgba(0,0,0,0.5);
+      display: none; align-items: center; justify-content: center; z-index: 100;
+    }
+    .modal-bg.show { display: flex; }
+    .modal {
+      background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+      width: min(1100px, 92vw); height: 86vh; display: flex; flex-direction: column;
+    }
+    .modal-head {
+      display: flex; align-items: center; gap: 12px;
+      padding: 10px 14px; border-bottom: 1px solid var(--border);
+    }
+    .modal-head .title { font-weight: 600; font-size: 13px; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .modal-head .meta { color: var(--muted); font-size: 11px; }
+    .modal-body {
+      padding: 12px 14px; overflow: auto; flex: 1;
+      font: 12px ui-monospace, monospace; white-space: pre-wrap; word-break: break-word;
+    }
+    .modal-tabs { display: flex; gap: 4px; }
+    .modal-tabs .tab { font-size: 10px; padding: 3px 10px; }
+    .modal-body pre { margin: 0; }
+    .modal-body pre code.hljs { padding: 12px; border-radius: 6px; display: block; }
+    /* — markdown render — */
+    .modal-body.md { font: 13px/1.5 ui-sans-serif, system-ui, sans-serif; white-space: normal; }
+    .modal-body.md h1, .modal-body.md h2, .modal-body.md h3 {
+      color: var(--accent); margin: 16px 0 6px; font-weight: 600;
+    }
+    .modal-body.md h2 { font-size: 14px; border-bottom: 1px solid var(--border); padding-bottom: 4px; }
+    .modal-body.md p, .modal-body.md ul, .modal-body.md ol { margin: 6px 0; }
+    .modal-body.md ul, .modal-body.md ol { padding-left: 22px; }
+    .modal-body.md code { font-family: ui-monospace, monospace; font-size: 11px; background: var(--panel-2); padding: 1px 4px; border-radius: 3px; }
+    .modal-body.md pre code { padding: 12px; }
+    /* — file history list inside modal — */
+    .commits { padding: 0; }
+    .commits .row {
+      display: flex; gap: 8px; padding: 6px 12px;
+      border-bottom: 1px solid var(--border); cursor: pointer;
+      font: 12px ui-monospace, monospace;
+    }
+    .commits .row:hover { background: var(--panel); }
+    .commits .row .hash { color: var(--accent); width: 70px; flex-shrink: 0; }
+    .commits .row .subject { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .commits .row .when { color: var(--muted); font-size: 10px; }
+    /* — diff coloring (hljs handles most) — */
+    .modal-body.diff { white-space: pre; }
+    /* — Monaco host fills the modal body. The body uses flex:1 inside
+         a fixed-height .modal, so it has real pixels for absolute
+         positioning to resolve against. */
+    .modal-body.monaco { padding: 0; position: relative; }
+    .modal-body.monaco > #monaco-host { position: absolute; inset: 0; }
   </style>
 </head>
 <body>
@@ -130,11 +203,16 @@
       </div>
     </div>
 
-    <!-- file tree -->
+    <!-- file tree / transcripts / git history -->
     <div class="pane tree">
-      <h2><span id="tree-title">Files</span>
+      <h2>
+        <span id="tree-title" style="margin-right: 12px;">Files</span>
+        <div class="tabs">
+          <button class="tab active" data-tab="files" id="tab-files">Files</button>
+          <button class="tab" data-tab="transcripts" id="tab-transcripts">Transcripts</button>
+        </div>
         <div class="actions">
-          <button id="refresh-tree" class="ghost" title="Refresh file tree">↻</button>
+          <button id="refresh-tree" class="ghost" title="Refresh">↻</button>
         </div>
       </h2>
       <div class="pane-body" id="tree-body">
@@ -151,6 +229,22 @@
       </h2>
       <div class="pane-body progress-log" id="progress-body">
         <div class="empty">Idle. Author or improve a node to see the CLI's output.</div>
+      </div>
+    </div>
+
+    <!-- modal: file content / file history / diff / transcript -->
+    <div class="modal-bg" id="modal-bg">
+      <div class="modal">
+        <div class="modal-head">
+          <span class="title" id="modal-title"></span>
+          <div class="modal-tabs" id="modal-tabs" style="display:none;">
+            <button class="tab active" data-mtab="content" id="mtab-content">Content</button>
+            <button class="tab" data-mtab="history" id="mtab-history">History</button>
+          </div>
+          <span class="meta" id="modal-meta"></span>
+          <button class="ghost" id="modal-close" title="Close">✕</button>
+        </div>
+        <div class="modal-body" id="modal-body"></div>
       </div>
     </div>
 
@@ -192,11 +286,26 @@
       btnCreate: document.getElementById('btn-create'),
       btnImprove: document.getElementById('btn-improve'),
       composeStatus: document.getElementById('compose-status'),
+      tabFiles: document.getElementById('tab-files'),
+      tabTranscripts: document.getElementById('tab-transcripts'),
+      modalBg: document.getElementById('modal-bg'),
+      modalTitle: document.getElementById('modal-title'),
+      modalMeta: document.getElementById('modal-meta'),
+      modalBody: document.getElementById('modal-body'),
+      modalClose: document.getElementById('modal-close'),
+      modalTabs: document.getElementById('modal-tabs'),
+      mtabContent: document.getElementById('mtab-content'),
+      mtabHistory: document.getElementById('mtab-history'),
     };
 
     let selectedSlug = null;
     let lastMessageId = null;
     let workspaces = [];
+    let activeTab = 'files'; // 'files' | 'transcripts'
+    // Modal state machine — fields populated per kind:
+    //   { kind: 'file', slug, path, view: 'content' | 'history' | 'diff', hash? }
+    //   { kind: 'transcript', slug, file }
+    let modal = null;
 
     function escapeHtml(s) {
       return String(s ?? '').replace(/[&<>"']/g, (c) => ({
@@ -258,7 +367,32 @@
           if (Array.isArray(meta.items)) renderWorkspaces(meta.items);
           break;
         case 'dev.files':
-          if (meta.slug === selectedSlug && Array.isArray(meta.tree)) renderTree(meta.tree);
+          if (meta.slug === selectedSlug && Array.isArray(meta.tree) && activeTab === 'files') renderTree(meta.tree);
+          break;
+        case 'dev.file.content':
+          if (modal?.kind === 'file' && modal.view === 'content' && modal.slug === meta.slug && modal.path === meta.path) {
+            renderModalCode(meta.path, meta.content || `error: ${meta.error || 'unknown'}`, meta.size);
+          }
+          break;
+        case 'dev.history':
+          if ((meta.slug === selectedSlug || !meta.slug) && Array.isArray(meta.entries) && activeTab === 'transcripts') {
+            renderTranscripts(meta.entries.filter((e) => !meta.slug || e.slug === selectedSlug));
+          }
+          break;
+        case 'dev.history.content':
+          if (modal?.kind === 'transcript' && modal.file === meta.file) {
+            renderModalMarkdown(meta.file, meta.content || `error: ${meta.error || 'unknown'}`);
+          }
+          break;
+        case 'dev.file.history':
+          if (modal?.kind === 'file' && modal.view === 'history' && modal.slug === meta.slug && modal.path === meta.path) {
+            renderModalHistory(meta.entries || [], meta.error);
+          }
+          break;
+        case 'dev.file.diff':
+          if (modal?.kind === 'file' && modal.view === 'diff' && modal.slug === meta.slug && modal.path === meta.path && modal.hash === meta.hash) {
+            renderModalDiff(meta.diff || `error: ${meta.error || 'unknown'}`);
+          }
           break;
         case 'dev.cli.available':
           if (Array.isArray(meta.clis)) renderClis(meta.clis, meta.default);
@@ -327,10 +461,10 @@
     function selectWorkspace(slug) {
       selectedSlug = slug;
       const ws = workspaces.find((w) => w.slug === slug);
-      els.treeTitle.textContent = ws?.type_name ? `Files — ${ws.type_name}` : `Files — ${slug}`;
+      els.treeTitle.textContent = ws?.type_name ? ws.type_name : slug;
       els.progressTitle.textContent = `Live progress — ${slug}`;
       els.btnImprove.disabled = false;
-      requestTree();
+      refreshActiveTab();
       // highlight in the list without re-fetching
       els.wsList.querySelectorAll('.ws').forEach((el) => {
         el.classList.toggle('selected', el.dataset.slug === slug);
@@ -357,6 +491,10 @@
         const icon = n.is_dir ? '▸' : '·';
         const meta = n.is_dir ? '' : (n.size ? ` ${n.size} B` : '');
         row.innerHTML = `<span class="icon">${icon}</span><span class="name">${escapeHtml(n.name)}</span><span class="meta">${meta}</span>`;
+        if (!n.is_dir) {
+          row.title = `Open ${n.path}`;
+          row.addEventListener('click', () => openFile(n.path, n.size));
+        }
         frag.appendChild(row);
         if (n.is_dir && n.children?.length) {
           const child = document.createElement('div');
@@ -367,6 +505,195 @@
       }
       return frag;
     }
+
+    function renderTranscripts(entries) {
+      if (!entries.length) {
+        els.treeBody.innerHTML = '<div class="empty">No transcripts yet — they appear after the first authoring run.</div>';
+        return;
+      }
+      const wrap = document.createElement('div');
+      wrap.className = 'tree-list';
+      for (const e of entries) {
+        const row = document.createElement('div');
+        row.className = 'row entry';
+        row.title = `Open ${e.file}`;
+        row.innerHTML = `<span class="icon">·</span><span class="name">${escapeHtml(e.mode || '?')} attempt ${escapeHtml(String(e.attempt ?? '?'))}</span><span class="meta">${escapeHtml(new Date(e.ts).toLocaleString())} · ${e.size} B</span>`;
+        row.addEventListener('click', () => openTranscript(e.slug, e.file));
+        wrap.appendChild(row);
+      }
+      els.treeBody.replaceChildren(wrap);
+    }
+
+    // ── modal ────────────────────────────────────────────────────────────────
+    function langFromPath(p) {
+      const ext = (p.split('.').pop() || '').toLowerCase();
+      const map = {
+        ts: 'typescript', tsx: 'typescript', js: 'javascript', mjs: 'javascript',
+        json: 'json', html: 'xml', css: 'css', md: 'markdown', yaml: 'yaml', yml: 'yaml',
+        sh: 'bash', py: 'python',
+      };
+      return map[ext] || 'plaintext';
+    }
+    let monacoReady = null; // Promise resolved with `monaco` global once loaded.
+    let monacoEditor = null;
+    function loadMonaco() {
+      if (monacoReady) return monacoReady;
+      monacoReady = new Promise((resolve) => {
+        // AMD loader is already on window via the loader.js <script> tag.
+        require.config({ paths: { vs: 'https://cdn.jsdelivr.net/npm/monaco-editor@0.45.0/min/vs' } });
+        require(['vs/editor/editor.main'], () => resolve(window.monaco));
+      });
+      return monacoReady;
+    }
+    function disposeMonaco() {
+      if (monacoEditor) { try { monacoEditor.dispose(); } catch {} monacoEditor = null; }
+    }
+    async function renderModalCode(path, content, size) {
+      disposeMonaco();
+      els.modalBody.className = 'modal-body monaco';
+      els.modalBody.innerHTML = '<div id="monaco-host"></div>';
+      const lang = langFromPath(path);
+      els.modalMeta.textContent = size ? `${size} B · ${lang}` : lang;
+      const monaco = await loadMonaco();
+      // Modal might have been closed during the async load — bail out cleanly.
+      if (!modal || modal.kind !== 'file' || modal.view !== 'content' || modal.path !== path) return;
+      monacoEditor = monaco.editor.create(document.getElementById('monaco-host'), {
+        value: content,
+        language: lang,
+        theme: 'vs-dark',
+        readOnly: true,
+        automaticLayout: true,
+        minimap: { enabled: true },
+        fontSize: 12,
+        scrollBeyondLastLine: false,
+        renderLineHighlight: 'line',
+      });
+    }
+    function renderModalMarkdown(title, content) {
+      disposeMonaco();
+      els.modalBody.className = 'modal-body md';
+      try {
+        els.modalBody.innerHTML = marked.parse(content);
+        els.modalBody.querySelectorAll('pre code').forEach((b) => { try { hljs.highlightElement(b); } catch {} });
+      } catch {
+        els.modalBody.textContent = content;
+      }
+      els.modalMeta.textContent = '';
+    }
+    function renderModalHistory(entries, error) {
+      disposeMonaco();
+      els.modalBody.className = 'modal-body';
+      if (error && !entries.length) {
+        els.modalBody.innerHTML = `<div class="empty">${escapeHtml(error)}</div>`;
+        return;
+      }
+      if (!entries.length) {
+        els.modalBody.innerHTML = '<div class="empty">No commits touched this file yet.</div>';
+        return;
+      }
+      const wrap = document.createElement('div');
+      wrap.className = 'commits';
+      for (const c of entries) {
+        const row = document.createElement('div');
+        row.className = 'row';
+        const date = c.date ? new Date(c.date).toLocaleString() : '';
+        row.innerHTML = `<span class="hash">${escapeHtml(c.hash)}</span><span class="subject">${escapeHtml(c.subject)}</span><span class="when">${escapeHtml(date)}</span>`;
+        row.addEventListener('click', () => openDiff(c.hash));
+        wrap.appendChild(row);
+      }
+      els.modalBody.replaceChildren(wrap);
+      els.modalMeta.textContent = `${entries.length} commit(s)`;
+    }
+    function renderModalDiff(diff) {
+      disposeMonaco();
+      els.modalBody.className = 'modal-body diff';
+      els.modalBody.innerHTML = '<pre><code class="language-diff"></code></pre>';
+      const codeEl = els.modalBody.querySelector('code');
+      codeEl.textContent = diff;
+      try { hljs.highlightElement(codeEl); } catch {}
+    }
+    function setModalChrome() {
+      els.modalTitle.textContent = modal?.kind === 'file' ? modal.path : (modal?.kind === 'transcript' ? modal.file : '');
+      // tabs only for file mode
+      if (modal?.kind === 'file') {
+        els.modalTabs.style.display = 'flex';
+        els.mtabContent.classList.toggle('active', modal.view === 'content');
+        els.mtabHistory.classList.toggle('active', modal.view === 'history' || modal.view === 'diff');
+      } else {
+        els.modalTabs.style.display = 'none';
+      }
+    }
+    function loadingBody(text) {
+      els.modalBody.className = 'modal-body';
+      els.modalBody.innerHTML = `<div class="empty">${escapeHtml(text)}</div>`;
+    }
+    function closeModal() {
+      els.modalBg.classList.remove('show');
+      modal = null;
+      disposeMonaco();
+    }
+    els.modalClose.addEventListener('click', closeModal);
+    els.modalBg.addEventListener('click', (e) => { if (e.target === els.modalBg) closeModal(); });
+    document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeModal(); });
+
+    function openFile(filePath, size) {
+      if (!selectedSlug) return;
+      modal = { kind: 'file', slug: selectedSlug, path: filePath, view: 'content' };
+      setModalChrome();
+      els.modalMeta.textContent = size ? `${size} B` : '';
+      loadingBody('loading…');
+      els.modalBg.classList.add('show');
+      send('dev.files.read', { slug: selectedSlug, path: filePath });
+    }
+    function openFileHistory() {
+      if (!modal || modal.kind !== 'file') return;
+      modal.view = 'history';
+      modal.hash = null;
+      setModalChrome();
+      loadingBody('loading…');
+      send('dev.files.history', { slug: modal.slug, path: modal.path });
+    }
+    function openDiff(hash) {
+      if (!modal || modal.kind !== 'file') return;
+      modal.view = 'diff';
+      modal.hash = hash;
+      setModalChrome();
+      loadingBody(`loading diff @ ${hash}…`);
+      send('dev.files.diff', { slug: modal.slug, path: modal.path, hash });
+    }
+    function openTranscript(slug, file) {
+      modal = { kind: 'transcript', slug, file };
+      setModalChrome();
+      loadingBody('loading…');
+      els.modalBg.classList.add('show');
+      send('dev.history.read', { slug, file });
+    }
+
+    els.mtabContent.addEventListener('click', () => {
+      if (!modal || modal.kind !== 'file') return;
+      modal.view = 'content';
+      setModalChrome();
+      loadingBody('loading…');
+      send('dev.files.read', { slug: modal.slug, path: modal.path });
+    });
+    els.mtabHistory.addEventListener('click', openFileHistory);
+
+    // ── tabs ─────────────────────────────────────────────────────────────────
+    function setActiveTab(tab) {
+      activeTab = tab;
+      els.tabFiles.classList.toggle('active', tab === 'files');
+      els.tabTranscripts.classList.toggle('active', tab === 'transcripts');
+      if (!selectedSlug) { els.treeBody.innerHTML = '<div class="empty">Pick a workspace on the left.</div>'; return; }
+      els.treeBody.innerHTML = '<div class="empty">loading…</div>';
+      refreshActiveTab();
+    }
+    function refreshActiveTab() {
+      if (!selectedSlug) return;
+      if (activeTab === 'files') send('dev.files.tree', { slug: selectedSlug });
+      else if (activeTab === 'transcripts') send('dev.history.list', { slug: selectedSlug });
+    }
+    els.tabFiles.addEventListener('click', () => setActiveTab('files'));
+    els.tabTranscripts.addEventListener('click', () => setActiveTab('transcripts'));
 
     // ── progress panel ────────────────────────────────────────────────────────
     function appendProgress(meta, klass = '') {
@@ -410,7 +737,7 @@
 
     // ── triggers ──────────────────────────────────────────────────────────────
     function requestList() { send('dev.workspaces.list', {}); }
-    function requestTree() { if (selectedSlug) send('dev.files.tree', { slug: selectedSlug }); }
+    function requestTree() { refreshActiveTab(); }
     function requestClis() { send('dev.cli.list', {}); }
 
     els.refreshList.addEventListener('click', requestList);

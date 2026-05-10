@@ -1,4 +1,4 @@
-import { spawn } from "child_process";
+import { spawn, spawnSync } from "child_process";
 import * as fs from "fs";
 import * as path from "path";
 import type { NodeContext, NodeHandler, TextPayload, Message, NodeInfo } from "@brain/sdk";
@@ -304,6 +304,44 @@ class ProgressBuffer {
 }
 
 /**
+ * Each authoring run takes a "before" + "after" snapshot in a workspace-
+ * local git repo so the user can inspect exactly what each attempt
+ * changed (`git diff <before>..<after>`). Best-effort: any git error is
+ * swallowed because the dev flow must keep working without git.
+ */
+function gitOp(args: string[], cwd: string): { stdout: string; exitCode: number } {
+  // shell:false even on Windows — git installs as git.exe (resolved
+  // directly by Node), and shell:true would re-tokenize args at spaces,
+  // mangling commit messages and config values like "brAIn dev-agent".
+  const r = spawnSync("git", args, {
+    cwd,
+    stdio: ["ignore", "pipe", "pipe"],
+    encoding: "utf-8",
+  });
+  return { stdout: (r.stdout ?? "") + (r.stderr ?? ""), exitCode: r.status ?? 1 };
+}
+
+function gitSnapshot(wsPath: string, message: string): void {
+  try {
+    const gitDir = path.join(wsPath, ".git");
+    if (!fs.existsSync(gitDir)) {
+      gitOp(["init", "--initial-branch=main"], wsPath);
+      // Workspace-local user/email so commits work without a global git
+      // identity (CI, fresh dev box, etc.).
+      gitOp(["config", "user.email", "dev-agent@brain.local"], wsPath);
+      gitOp(["config", "user.name", "brAIn dev-agent"], wsPath);
+      // Don't track build outputs / deps / our own transcript dir.
+      const gitignorePath = path.join(wsPath, ".gitignore");
+      if (!fs.existsSync(gitignorePath)) {
+        fs.writeFileSync(gitignorePath, "node_modules/\ndist/\n.dev-history/\n", "utf-8");
+      }
+    }
+    gitOp(["add", "-A"], wsPath);
+    gitOp(["commit", "--allow-empty", "-m", message], wsPath);
+  } catch { /* git failure must not break the dev flow */ }
+}
+
+/**
  * Append the prompt + full CLI output to the workspace's on-disk
  * history. One file per attempt: `.dev-history/<ts>-<mode>-attempt-<n>.log`.
  * Survives state wipes and dev-instance restarts; queryable via
@@ -352,6 +390,7 @@ async function runWorkspaceJob(
 ): Promise<void> {
   ws.attempts += 1;
   ctx.log("info", `[${ws.slug}] attempt ${ws.attempts}/${config.max_attempts} (cli=${ws.cli}, mode=${ws.mode})`);
+  gitSnapshot(ws.path, `before ${ws.mode} attempt ${ws.attempts}`);
   const progress = new ProgressBuffer(ctx, ws.slug);
   progress.start();
   ctx.publish("dev.progress", {
@@ -372,6 +411,7 @@ async function runWorkspaceJob(
   } finally {
     progress.stop();
     if (result) writeTranscript(ws, prompt, result, Date.now() - startTs);
+    gitSnapshot(ws.path, `after ${ws.mode} attempt ${ws.attempts} (cli exit ${result?.exitCode ?? "?"})`);
   }
 }
 
@@ -816,6 +856,151 @@ function publishHistoryList(ctx: NodeContext, monorepoRoot: string, msg: Message
   });
 }
 
+interface GitLogEntry {
+  hash: string;
+  date: string;
+  subject: string;
+}
+
+function publishGitLog(ctx: NodeContext, monorepoRoot: string, msg: Message): void {
+  const body = parseJsonContent(msg);
+  const slug = typeof body.slug === "string" ? body.slug : "";
+  const emit = (payload: Record<string, unknown>): void => {
+    ctx.publish("dev.git", {
+      type: "text",
+      criticality: 1,
+      payload: { content: JSON.stringify(payload) },
+      metadata: payload,
+    });
+  };
+  if (!slug) { emit({ error: "missing slug" }); return; }
+  const wsDir = path.resolve(monorepoRoot, "nodes", "_dynamic", slug);
+  if (!fs.existsSync(path.join(wsDir, ".git"))) {
+    emit({ slug, entries: [], error: "no git history yet" });
+    return;
+  }
+  const r = gitOp(["log", "--pretty=format:%H%x09%aI%x09%s", "-50"], wsDir);
+  if (r.exitCode !== 0) {
+    emit({ slug, entries: [], error: r.stdout.split("\n").slice(-3).join(" | ") });
+    return;
+  }
+  const entries: GitLogEntry[] = r.stdout.split("\n").filter(Boolean).map((line) => {
+    const parts = line.split("\t");
+    return { hash: (parts[0] ?? "").slice(0, 8), date: parts[1] ?? "", subject: parts.slice(2).join("\t") };
+  });
+  emit({ slug, entries });
+}
+
+function publishFileHistory(ctx: NodeContext, monorepoRoot: string, msg: Message): void {
+  const body = parseJsonContent(msg);
+  const slug = typeof body.slug === "string" ? body.slug : "";
+  const requestedPath = typeof body.path === "string" ? body.path : "";
+  const emit = (payload: Record<string, unknown>): void => {
+    ctx.publish("dev.file.history", {
+      type: "text",
+      criticality: 1,
+      payload: { content: JSON.stringify(payload) },
+      metadata: payload,
+    });
+  };
+  if (!slug || !requestedPath) { emit({ error: "missing slug or path" }); return; }
+  const wsDir = path.resolve(monorepoRoot, "nodes", "_dynamic", slug);
+  // Path-traversal guard.
+  const filePath = path.resolve(wsDir, requestedPath);
+  if (filePath !== wsDir && !filePath.startsWith(wsDir + path.sep)) {
+    emit({ slug, path: requestedPath, error: "path escapes workspace" });
+    return;
+  }
+  if (!fs.existsSync(path.join(wsDir, ".git"))) {
+    emit({ slug, path: requestedPath, entries: [], error: "no git history yet" });
+    return;
+  }
+  // --follow: track renames; -- separates path from rev so a file named
+  // like a branch doesn't get misparsed.
+  const r = gitOp(["log", "--follow", "--pretty=format:%H%x09%aI%x09%s", "-50", "--", requestedPath], wsDir);
+  if (r.exitCode !== 0) {
+    emit({ slug, path: requestedPath, entries: [], error: r.stdout.split("\n").slice(-3).join(" | ") });
+    return;
+  }
+  const entries: GitLogEntry[] = r.stdout.split("\n").filter(Boolean).map((line) => {
+    const parts = line.split("\t");
+    return { hash: (parts[0] ?? "").slice(0, 8), date: parts[1] ?? "", subject: parts.slice(2).join("\t") };
+  });
+  emit({ slug, path: requestedPath, entries });
+}
+
+function publishFileDiff(ctx: NodeContext, monorepoRoot: string, msg: Message): void {
+  const body = parseJsonContent(msg);
+  const slug = typeof body.slug === "string" ? body.slug : "";
+  const requestedPath = typeof body.path === "string" ? body.path : "";
+  const hash = typeof body.hash === "string" ? body.hash : "";
+  const emit = (payload: Record<string, unknown>): void => {
+    ctx.publish("dev.file.diff", {
+      type: "text",
+      criticality: 1,
+      payload: { content: JSON.stringify(payload) },
+      metadata: payload,
+    });
+  };
+  if (!slug || !requestedPath || !hash) { emit({ error: "missing slug/path/hash" }); return; }
+  // Hash validation — must be hex only, prevents arg injection (e.g. ";rm").
+  if (!/^[0-9a-f]{4,40}$/i.test(hash)) { emit({ slug, path: requestedPath, hash, error: "invalid hash" }); return; }
+  const wsDir = path.resolve(monorepoRoot, "nodes", "_dynamic", slug);
+  const filePath = path.resolve(wsDir, requestedPath);
+  if (filePath !== wsDir && !filePath.startsWith(wsDir + path.sep)) {
+    emit({ slug, path: requestedPath, hash, error: "path escapes workspace" });
+    return;
+  }
+  if (!fs.existsSync(path.join(wsDir, ".git"))) {
+    emit({ slug, path: requestedPath, hash, error: "no git history yet" });
+    return;
+  }
+  const r = gitOp(["show", "--no-color", `${hash}`, "--", requestedPath], wsDir);
+  if (r.exitCode !== 0) {
+    emit({ slug, path: requestedPath, hash, error: r.stdout.split("\n").slice(-3).join(" | ") });
+    return;
+  }
+  // 256 KB cap (same as file content).
+  const diff = r.stdout.length > 256 * 1024 ? r.stdout.slice(0, 256 * 1024) + "\n…[truncated]" : r.stdout;
+  emit({ slug, path: requestedPath, hash, diff });
+}
+
+function publishFileContent(ctx: NodeContext, monorepoRoot: string, msg: Message): void {
+  const body = parseJsonContent(msg);
+  const slug = typeof body.slug === "string" ? body.slug : "";
+  const requestedPath = typeof body.path === "string" ? body.path : "";
+  const emit = (payload: Record<string, unknown>): void => {
+    ctx.publish("dev.file.content", {
+      type: "text",
+      criticality: 1,
+      payload: { content: JSON.stringify(payload) },
+      metadata: payload,
+    });
+  };
+  if (!slug || !requestedPath) { emit({ error: "missing slug or path" }); return; }
+  const wsDir = path.resolve(monorepoRoot, "nodes", "_dynamic", slug);
+  const filePath = path.resolve(wsDir, requestedPath);
+  // Path-traversal guard: resolved path must stay inside the workspace.
+  if (filePath !== wsDir && !filePath.startsWith(wsDir + path.sep)) {
+    emit({ slug, path: requestedPath, error: "path escapes workspace" });
+    return;
+  }
+  try {
+    const stat = fs.statSync(filePath);
+    if (stat.isDirectory()) { emit({ slug, path: requestedPath, error: "is a directory" }); return; }
+    // 256 KB cap — UI viewer doesn't need more, and bus messages should
+    // stay light.
+    if (stat.size > 256 * 1024) {
+      emit({ slug, path: requestedPath, error: `file too large (${stat.size} bytes; cap 262144)` });
+      return;
+    }
+    const content = fs.readFileSync(filePath, "utf-8");
+    emit({ slug, path: requestedPath, content, size: stat.size, mtime: stat.mtimeMs });
+  } catch (err) {
+    emit({ slug, path: requestedPath, error: String(err) });
+  }
+}
+
 function publishHistoryRead(ctx: NodeContext, monorepoRoot: string, msg: Message): void {
   const body = parseJsonContent(msg);
   const slug = typeof body.slug === "string" ? body.slug : "";
@@ -876,6 +1061,22 @@ export const handler: NodeHandler = async (ctx) => {
     }
     if (msg.topic === "dev.history.read") {
       publishHistoryRead(ctx, monorepoRoot, msg);
+      continue;
+    }
+    if (msg.topic === "dev.files.read") {
+      publishFileContent(ctx, monorepoRoot, msg);
+      continue;
+    }
+    if (msg.topic === "dev.git.log") {
+      publishGitLog(ctx, monorepoRoot, msg);
+      continue;
+    }
+    if (msg.topic === "dev.files.history") {
+      publishFileHistory(ctx, monorepoRoot, msg);
+      continue;
+    }
+    if (msg.topic === "dev.files.diff") {
+      publishFileDiff(ctx, monorepoRoot, msg);
       continue;
     }
     if (msg.topic === "dev.improve") {

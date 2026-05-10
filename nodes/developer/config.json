@@ -34,6 +34,22 @@
       "description": "Read one transcript file's full content. Payload: {slug, file} — file must be a basename within the workspace's .dev-history/ folder. Reply on dev.history.content."
     },
     {
+      "topic": "dev.files.read",
+      "description": "Read the content of one file inside an authored workspace. Payload: {slug, path} — path is relative to the workspace root, must stay inside it (256 KB cap). Reply on dev.file.content."
+    },
+    {
+      "topic": "dev.git.log",
+      "description": "List git commits for an authored workspace. Each authoring run takes a before/after snapshot. Payload: {slug}. Reply on dev.git."
+    },
+    {
+      "topic": "dev.files.history",
+      "description": "List git commits that touched ONE file in a workspace (with --follow for renames). Payload: {slug, path}. Reply on dev.file.history."
+    },
+    {
+      "topic": "dev.files.diff",
+      "description": "Get the diff of one file at one commit. Payload: {slug, path, hash}. Reply on dev.file.diff."
+    },
+    {
       "topic": "types.validation_failed",
       "description": "Framework feedback when a workspace this node authored failed validation. Used to iterate on the failing build."
     },
@@ -50,9 +66,13 @@
     "dev.result",
     "dev.workspaces",
     "dev.files",
+    "dev.file.content",
     "dev.cli.available",
     "dev.history",
     "dev.history.content",
+    "dev.git",
+    "dev.file.history",
+    "dev.file.diff",
     "dev.progress",
     "dev.spawned"
   ],
