@@ -26,6 +26,14 @@
       "description": "Request the catalogue of available code-authoring CLIs (claude, codex, ...). Reply on dev.cli.available."
     },
     {
+      "topic": "dev.history.list",
+      "description": "List on-disk transcripts of every authoring run (one .log per attempt). Payload: {slug?} — omit to list across all workspaces. Reply on dev.history."
+    },
+    {
+      "topic": "dev.history.read",
+      "description": "Read one transcript file's full content. Payload: {slug, file} — file must be a basename within the workspace's .dev-history/ folder. Reply on dev.history.content."
+    },
+    {
       "topic": "types.validation_failed",
       "description": "Framework feedback when a workspace this node authored failed validation. Used to iterate on the failing build."
     },
@@ -43,6 +51,8 @@
     "dev.workspaces",
     "dev.files",
     "dev.cli.available",
+    "dev.history",
+    "dev.history.content",
     "dev.progress",
     "dev.spawned"
   ],

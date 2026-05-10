@@ -29,11 +29,15 @@ validation feedback.
   "tags": ["relevant", "tags"],
   "default_authority": 0,
   "default_priority": 1,
-  "default_subscriptions": [{ "topic": "some.input.topic" }],
+  "default_subscriptions": [
+    { "topic": "some.input.topic", "description": "Why this node listens here." }
+  ],
   "default_publishes": ["some.output.topic"],
   "supports_transport": ["process"]
 }
 \`\`\`
+
+CRITICAL: every entry in \`default_subscriptions\` MUST have BOTH \`topic\` and \`description\` (description is a NOT NULL DB column — the framework's auto-spawn will fail with "NOT NULL constraint failed: subscriptions.description" if you omit it).
 
 ### 2. package.json
 \`\`\`json

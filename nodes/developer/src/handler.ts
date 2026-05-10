@@ -303,6 +303,47 @@ class ProgressBuffer {
   }
 }
 
+/**
+ * Append the prompt + full CLI output to the workspace's on-disk
+ * history. One file per attempt: `.dev-history/<ts>-<mode>-attempt-<n>.log`.
+ * Survives state wipes and dev-instance restarts; queryable via
+ * `dev.history.list` / `dev.history.read`.
+ */
+function writeTranscript(
+  ws: WorkspaceMeta,
+  prompt: string,
+  result: { stdout: string; exitCode: number },
+  durationMs: number,
+): void {
+  try {
+    const historyDir = path.join(ws.path, ".dev-history");
+    if (!fs.existsSync(historyDir)) fs.mkdirSync(historyDir, { recursive: true });
+    const ts = new Date().toISOString().replace(/[:.]/g, "-");
+    const filename = `${ts}-${ws.mode}-attempt-${ws.attempts}.log`;
+    const header = [
+      "# brAIn dev transcript",
+      `slug:        ${ws.slug}`,
+      `mode:        ${ws.mode}`,
+      `attempt:     ${ws.attempts}`,
+      `cli:         ${ws.cli}`,
+      `exit_code:   ${result.exitCode}`,
+      `duration_ms: ${durationMs}`,
+      `timestamp:   ${new Date().toISOString()}`,
+      "",
+      "## Request",
+      ws.request,
+      "",
+      "## Prompt sent to CLI",
+      prompt,
+      "",
+      "## CLI stdout",
+    ].join("\n");
+    fs.writeFileSync(path.join(historyDir, filename), header + "\n" + result.stdout, "utf-8");
+  } catch {
+    // Non-fatal — transcript write must never break the dev flow.
+  }
+}
+
 async function runWorkspaceJob(
   ctx: NodeContext,
   ws: WorkspaceMeta,
@@ -319,8 +360,10 @@ async function runWorkspaceJob(
     payload: { content: `start attempt ${ws.attempts}` },
     metadata: { slug: ws.slug, lines: [`▶ start attempt ${ws.attempts} via ${ws.cli}`], ts: new Date().toISOString() },
   });
+  const startTs = Date.now();
+  let result: { stdout: string; exitCode: number } | null = null;
   try {
-    const result = await runCli(ws.cli, prompt, path.dirname(ws.path), config.timeout_ms, (line) => {
+    result = await runCli(ws.cli, prompt, path.dirname(ws.path), config.timeout_ms, (line) => {
       ctx.log("debug", `[${ws.slug}] ${line.slice(0, 200)}`);
       progress.push(line);
     }, ctx.signal);
@@ -328,6 +371,7 @@ async function runWorkspaceJob(
     progress.push(`▶ CLI exit ${result.exitCode}`);
   } finally {
     progress.stop();
+    if (result) writeTranscript(ws, prompt, result, Date.now() - startTs);
   }
 }
 
@@ -718,6 +762,88 @@ function publishCliList(ctx: NodeContext, cliRegistry: CLIRegistry, defaultCli: 
   });
 }
 
+interface TranscriptEntry {
+  slug: string;
+  file: string;
+  mode: string | null;
+  attempt: number | null;
+  ts: number;
+  size: number;
+}
+
+const TRANSCRIPT_NAME_RE = /^(.+?)-(create|improve|retry)-attempt-(\d+)\.log$/;
+
+function listHistory(monorepoRoot: string, slugFilter?: string): TranscriptEntry[] {
+  const dynamicDir = path.join(monorepoRoot, "nodes", "_dynamic");
+  if (!fs.existsSync(dynamicDir)) return [];
+  const slugs = slugFilter
+    ? [slugFilter]
+    : fs.readdirSync(dynamicDir, { withFileTypes: true })
+        .filter((e) => e.isDirectory())
+        .map((e) => e.name);
+  const out: TranscriptEntry[] = [];
+  for (const slug of slugs) {
+    const historyDir = path.join(dynamicDir, slug, ".dev-history");
+    if (!fs.existsSync(historyDir)) continue;
+    for (const e of fs.readdirSync(historyDir, { withFileTypes: true })) {
+      if (!e.isFile() || !e.name.endsWith(".log")) continue;
+      const filePath = path.join(historyDir, e.name);
+      let stat: fs.Stats | null = null;
+      try { stat = fs.statSync(filePath); } catch { continue; }
+      const m = e.name.match(TRANSCRIPT_NAME_RE);
+      out.push({
+        slug,
+        file: e.name,
+        mode: m?.[2] ?? null,
+        attempt: m ? Number(m[3]) : null,
+        ts: stat.mtimeMs,
+        size: stat.size,
+      });
+    }
+  }
+  return out.sort((a, b) => b.ts - a.ts);
+}
+
+function publishHistoryList(ctx: NodeContext, monorepoRoot: string, msg: Message): void {
+  const body = parseJsonContent(msg);
+  const slug = typeof body.slug === "string" ? body.slug : undefined;
+  const entries = listHistory(monorepoRoot, slug);
+  ctx.publish("dev.history", {
+    type: "text",
+    criticality: 1,
+    payload: { content: JSON.stringify({ slug, entries }) },
+    metadata: { slug, entries, ts: new Date().toISOString() },
+  });
+}
+
+function publishHistoryRead(ctx: NodeContext, monorepoRoot: string, msg: Message): void {
+  const body = parseJsonContent(msg);
+  const slug = typeof body.slug === "string" ? body.slug : "";
+  const file = typeof body.file === "string" ? body.file : "";
+  function emit(payload: Record<string, unknown>): void {
+    ctx.publish("dev.history.content", {
+      type: "text",
+      criticality: 1,
+      payload: { content: JSON.stringify(payload) },
+      metadata: payload,
+    });
+  }
+  if (!slug || !file) { emit({ error: "missing slug or file" }); return; }
+  // Path traversal guard — file must be a basename within the workspace
+  // dir's .dev-history folder, not a relative escape sequence.
+  if (file.includes("..") || file.includes("/") || file.includes("\\")) {
+    emit({ slug, file, error: "invalid file (path traversal)" });
+    return;
+  }
+  const filePath = path.join(monorepoRoot, "nodes", "_dynamic", slug, ".dev-history", file);
+  try {
+    const content = fs.readFileSync(filePath, "utf-8");
+    emit({ slug, file, content });
+  } catch (err) {
+    emit({ slug, file, error: String(err) });
+  }
+}
+
 export const handler: NodeHandler = async (ctx) => {
   if (ctx.messages.length === 0) {
     ctx.sleep([{ type: "any" }]);
@@ -742,6 +868,14 @@ export const handler: NodeHandler = async (ctx) => {
     }
     if (msg.topic === "dev.cli.list") {
       publishCliList(ctx, cliRegistry, config.cli);
+      continue;
+    }
+    if (msg.topic === "dev.history.list") {
+      publishHistoryList(ctx, monorepoRoot, msg);
+      continue;
+    }
+    if (msg.topic === "dev.history.read") {
+      publishHistoryRead(ctx, monorepoRoot, msg);
       continue;
     }
     if (msg.topic === "dev.improve") {
