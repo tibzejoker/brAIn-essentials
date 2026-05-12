@@ -79,10 +79,27 @@ export const handler: NodeHandler = async (ctx) => {
     ctx.log("info", "Conversation state cleared via UI");
   }
 
-  // Build situation awareness
-  const hasMessages = ctx.messages.length > 0;
+  // Build situation awareness — but filter out two kinds of "ambient"
+  // chat.input that would only seduce the LLM into being too helpful:
+  //
+  //   1. `from` starts with `system.` — that's UI buttons sending things
+  //      like "5" from a game node's UI. The game already handles them.
+  //   2. metadata.from_game is set — the message is part of an in-game
+  //      narration loop or a game-tagged player input. Stay out of it.
+  //
+  // Without this filter the brain LLM cheerfully starts publishing moves
+  // on chat.input on the player's behalf (seen in tic-tac-toe when the
+  // LLM is meant to play first — brain published "2" pretending to be
+  // the human).
+  const filteredMessages = ctx.messages.filter((m) => {
+    if (m.from.startsWith("system.")) return false;
+    const meta = m.metadata as Record<string, unknown> | undefined;
+    if (meta?.from_game !== undefined || meta?.is_game_move === true) return false;
+    return true;
+  });
+  const hasMessages = filteredMessages.length > 0;
   const messagesSummary = hasMessages
-    ? ctx.messages.map(formatMessage).join("\n")
+    ? filteredMessages.map(formatMessage).join("\n")
     : "No new messages.";
 
   const iterationState = ctx.state.conversation_count as number | undefined ?? 0;
@@ -125,6 +142,8 @@ While sleeping, you'll only wake up if a message arrives on your subscribed topi
 - To use a service, publish a message on its input topic with publish_message — do NOT try to call it directly
 - Wait for the service response in a follow-up iteration (it arrives as a message)
 - Be concise, respond in the same language as the user
+- NEVER publish on \`chat.input\` — that topic is for humans typing into a chat surface. To talk back to the user, use your response_topic (\`chat.response\`) via the respond mechanism, never publish_message(topic="chat.input", …)
+- If a game service is active on the network (e.g. hangman, tictactoe), short numeric or single-letter messages are the player's moves intercepted by that game. Don't try to play on the player's behalf and don't echo them back
 - Current time: ${new Date().toLocaleString("fr-FR", { dateStyle: "full", timeStyle: "medium" })}
 - Current iteration: ${iterationState + 1}
 - Iterations remaining: ${ctx.state._iterations_remaining ?? "unknown"} / ${ctx.state._iterations_total ?? "unknown"}${ctx.state._budget_warning ? `\n\n⚠️ ${ctx.state._budget_warning}` : ""}`;
