@@ -92,7 +92,6 @@ import type { NodeHandler, TextPayload } from "@brain/sdk";
 
 export const handler: NodeHandler = async (ctx) => {
   if (ctx.messages.length === 0) {
-    ctx.sleep([{ type: "any" }]);
     return;
   }
 
@@ -122,7 +121,6 @@ function makeCtx(messages: Message[] = []): NodeContext {
     publish: vi.fn(),
     subscribe: vi.fn(),
     unsubscribe: vi.fn(),
-    sleep: vi.fn(),
     callLLM: vi.fn(),
     callTool: vi.fn(),
     readFile: vi.fn(),
@@ -138,10 +136,10 @@ function makeCtx(messages: Message[] = []): NodeContext {
 }
 
 describe("my-node handler", () => {
-  it("sleeps when there are no messages", async () => {
+  it("is a no-op when there are no messages", async () => {
     const ctx = makeCtx();
-    await handler(ctx);
-    expect(ctx.sleep).toHaveBeenCalled();
+    await expect(handler(ctx)).resolves.toBeUndefined();
+    expect(ctx.respond).not.toHaveBeenCalled();
   });
 
   it("responds when it receives input", async () => {

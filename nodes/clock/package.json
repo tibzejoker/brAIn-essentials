@@ -9,7 +9,8 @@
     "dev": "tsc --watch"
   },
   "dependencies": {
-    "@brain/sdk": "workspace:*"
+    "@brain/sdk": "workspace:*",
+    "@brain/core": "workspace:*"
   },
   "devDependencies": {
     "typescript": "^5.4.0",

@@ -1,48 +1,7 @@
-import type { NodeHandler, TextPayload, AlertPayload } from "@brain/sdk";
+import type { NodeHandler, TextPayload, AlertPayload, ToolDescriptor } from "@brain/sdk";
 import { BrainService, logger } from "@brain/core";
-import { executeBrainTool, BRAIN_TOOL_DESCRIPTIONS } from "./tools";
-import { parseToolCall, parseSleepRequest } from "./tool-parser";
 
 const log = logger.child({ node: "brain" });
-
-function buildServiceMap(selfId: string): string {
-  const brain = BrainService.current
-    ?? (globalThis as Record<string, unknown>).__brainService as BrainService | undefined;
-  if (!brain) return "No network info available.";
-
-  const nodes = brain.getNetworkSnapshot({ state: "all" });
-  const services: string[] = [];
-
-  for (const node of nodes) {
-    if (node.id === selfId) continue;
-    const subs = brain.bus.getSubscriptions(node.id).map((s) => s.pattern);
-    if (subs.length === 0) continue;
-
-    services.push(
-      `- **${node.name}** (${node.type}): ${node.description}\n` +
-      `  Listens on: ${subs.join(", ")}\n` +
-      `  → To use: publish_message(topic="<one of its topics>", content="<your request>")`,
-    );
-  }
-
-  if (services.length === 0) return "No services available.";
-
-  return `## Available services on the network
-You delegate work to other nodes by publishing messages on their input topics using the publish_message tool.
-Each service listens on specific topics and responds on its own response topic (which you are subscribed to).
-
-${services.join("\n\n")}
-
-Example — to run a shell command:
-{"tool": "publish_message", "args": {"topic": "cmd.exec", "content": "ls -la /tmp"}}
-
-Example — to analyze something:
-{"tool": "publish_message", "args": {"topic": "task.analyze", "content": "What are the pros and cons of microservices?"}}
-
-Example — to fetch a URL:
-{"tool": "publish_message", "args": {"topic": "http.request", "content": "https://api.example.com/data"}}
-`;
-}
 
 interface BrainConfig {
   max_steps: number;
@@ -65,6 +24,7 @@ function formatMessage(msg: { from: string; topic: string; criticality: number; 
   return `[from:${msg.from.slice(0, 8)} topic:${msg.topic} crit:${msg.criticality}] ${JSON.stringify(payload)}`;
 }
 
+
 export const handler: NodeHandler = async (ctx) => {
   const config = getConfig(ctx.node.config_overrides ?? {} as Record<string, unknown>);
 
@@ -83,11 +43,6 @@ export const handler: NodeHandler = async (ctx) => {
   //      like "5" from a game node's UI. The game already handles them.
   //   2. metadata.from_game is set — the message is part of an in-game
   //      narration loop or a game-tagged player input. Stay out of it.
-  //
-  // Without this filter the brain LLM cheerfully starts publishing moves
-  // on chat.input on the player's behalf (seen in tic-tac-toe when the
-  // LLM is meant to play first — brain published "2" pretending to be
-  // the human).
   const filteredMessages = ctx.messages.filter((m) => {
     if (m.from.startsWith("system.")) return false;
     const meta = m.metadata as Record<string, unknown> | undefined;
@@ -95,14 +50,36 @@ export const handler: NodeHandler = async (ctx) => {
     return true;
   });
   const hasMessages = filteredMessages.length > 0;
-  const messagesSummary = hasMessages
-    ? filteredMessages.map(formatMessage).join("\n")
-    : "No new messages.";
+
+  // Short-circuit when there's nothing to think about: don't burn an
+  // LLM call (and tokens) just to have the model emit "sleep". The
+  // framework now parks us automatically until the next message lands.
+  if (!hasMessages && !ctx.state._woke_from_sleep) {
+    return;
+  }
+  if (!hasMessages && ctx.state._woke_from_sleep) {
+    ctx.state._woke_from_sleep = false;
+    return;
+  }
+
+  const messagesSummary = filteredMessages.map(formatMessage).join("\n");
 
   const iterationState = ctx.state.conversation_count as number | undefined ?? 0;
   ctx.state.conversation_count = iterationState + 1;
 
-  const serviceMap = buildServiceMap(ctx.node.id);
+  // Pull the live tool catalog from the framework facade. This already
+  // filters out internal-only subscriptions and refreshes per call, so
+  // newly-spawned services appear immediately. We drop our own tools
+  // so the brain can't try to call itself.
+  const allTools = ctx.tools.list().filter((t) => t.node_id !== ctx.node.id);
+
+  // We don't list tools in the prompt anymore — ai-sdk's multi-tool
+  // call surface gives the LLM every tool's name + description + schema
+  // directly, which is far more reliable than a bullet list. We keep a
+  // tiny summary string only to flag "no tools yet" empty-network states.
+  const networkToolsBlock = allTools.length === 0
+    ? "No network tools currently available."
+    : `${allTools.length} network tool(s) are available — call them by name (see your tools list).`;
 
   // Check for system prompt override from UI
   const promptOverride = ctx.node.config_overrides?.system_prompt_override as string | undefined;
@@ -111,36 +88,26 @@ export const handler: NodeHandler = async (ctx) => {
 
 Your role:
 - Respond to human messages from the chat
-- Delegate tasks to specialized nodes via publish_message
+- Delegate tasks to specialized nodes by calling their tool on the network
 - Monitor the network and react to alerts
-- Spawn, kill, stop, start, and rewire nodes as needed
-- Sleep when there's nothing to do
 
 ## Autonomy
 You are proactive but measured.
-- Use your tools when they help: search memory, run commands, delegate to the analyst, fetch URLs. Don't answer from your head if a tool gives a better answer.
-- Store important facts in memory (user names, preferences, decisions) so you remember them next time.
-- After responding, sleep and wait for the user's next message.
-- If you asked a question, sleep — don't answer yourself.
-- When idle, you may choose to: sleep, OR do one small useful thing that improves future responses (e.g. store a fact in memory, check something with a command).
+- Use a network tool when it helps — don't answer from your head if delegation gives a better answer.
+- After responding to the user, simply stop calling tools. The framework will park you until the next message lands. There is no manual sleep.
+- If you asked a question, stop — don't answer yourself.
 
-${serviceMap}
+## Available network tools
+${networkToolsBlock}
 
-${BRAIN_TOOL_DESCRIPTIONS}
-
-## Sleep
-When there's nothing to do, you can sleep:
-{"tool": "sleep", "args": {"duration": "X"}}
-Valid durations: 30s, 1m, 5m, 10m, 30m, 1h
-While sleeping, you'll only wake up if a message arrives on your subscribed topics.
+## Built-in tools
+- **respond** — reply to the user on the chat surface (\`chat.response\`). Use this for any message meant for a human.
 
 ## Important
-- You are root authority — you can manage any node
-- To use a service, publish a message on its input topic with publish_message — do NOT try to call it directly
-- Wait for the service response in a follow-up iteration (it arrives as a message)
-- Be concise, respond in the same language as the user
-- NEVER publish on \`chat.input\` — that topic is for humans typing into a chat surface. To talk back to the user, use your response_topic (\`chat.response\`) via the respond mechanism, never publish_message(topic="chat.input", …)
-- If a game service is active on the network (e.g. hangman, tictactoe), short numeric or single-letter messages are the player's moves intercepted by that game. Don't try to play on the player's behalf and don't echo them back
+- You MUST call exactly one tool per step. There is no plain-text path.
+- To talk to a human, use \`respond\`. NEVER publish to \`chat.input\` — that topic is for humans typing.
+- Be concise, respond in the same language as the user.
+- If a game service is active (e.g. hangman, tictactoe), short numeric or single-letter messages are the player's moves — let the game handle them and do not echo or pre-empt.
 - Current time: ${new Date().toLocaleString("fr-FR", { dateStyle: "full", timeStyle: "medium" })}
 - Current iteration: ${iterationState + 1}
 - Iterations remaining: ${ctx.state._iterations_remaining ?? "unknown"} / ${ctx.state._iterations_total ?? "unknown"}${ctx.state._budget_warning ? `\n\n⚠️ ${ctx.state._budget_warning}` : ""}`;
@@ -169,89 +136,130 @@ While sleeping, you'll only wake up if a message arrives on your subscribed topi
     conversation.shift();
   }
 
-  // --- Helpers: publish response & request sleep ---
-  function respond(raw: string): void {
-    const content = stripToolJson(raw);
-    if (content.length === 0) return;
-    ctx.respond(content);
-  }
-
-  function goToSleep(duration: string, reason: string): void {
-    log.info({ duration }, reason);
-    ctx.sleep([{ type: "timer", value: duration }, { type: "any" }]);
-  }
-
-  function stripToolJson(text: string): string {
-    return text
-      .replace(/\{[\s]*"tool"[\s]*:[\s]*"[^"]*"[\s\S]*?\}/g, "")  // complete tool JSON
-      .replace(/^\s*[{}]\s*$/gm, "")                                // orphan braces on their own line
-      .replace(/\n{3,}/g, "\n\n")                                   // collapse excess blank lines
-      .trim();
+  // --- Build the multi-tool dispatch ---
+  // We expose ONE flat tool per action the brain can take:
+  //   - respond({content})        → talk to the user
+  //   - <topic-as-name>(<schema>) → one tool per ToolDescriptor in the
+  //     live network catalog, with the EXACT inputSchema declared by
+  //     that node (so the LLM sees the real fields it can pass).
+  //
+  // This is the right shape for `ctx.llm.tools()`: ai-sdk's multi-tool
+  // path handles routing natively and works reliably with local models
+  // — unlike a single tool wrapped in oneOf.
+  type ToolMap = Record<string, { description: string; inputSchema: Record<string, unknown> }>;
+  // Sanitize a topic into a tool-name shape ai-sdk accepts (alphanum,
+  // underscores). Dots in topic names confuse some providers.
+  const sanitize = (topic: string): string => topic.replace(/[^a-zA-Z0-9_]/g, "_");
+  const dispatchTools: ToolMap = {
+    respond: {
+      description: "Reply to the user on chat.response. Use this for any human-directed message.",
+      inputSchema: {
+        type: "object",
+        required: ["content"],
+        additionalProperties: false,
+        properties: {
+          content: { type: "string", description: "Message text, in the user's language." },
+        },
+      },
+    },
+  };
+  const networkToolByName = new Map<string, ToolDescriptor>();
+  for (const t of allTools) {
+    const name = sanitize(t.topic);
+    networkToolByName.set(name, t);
+    dispatchTools[name] = {
+      description: `${t.description} (publishes on topic ${t.topic}, handled by ${t.node_name}.)`,
+      inputSchema: t.inputSchema,
+    };
   }
 
   // --- Main LLM loop ---
   try {
     const resolution = ctx.llm.resolveModel();
-    ctx.log("info", `LLM call → ${resolution.resolved} (${ctx.messages.length} messages)`);
+    ctx.log("info", `LLM call → ${resolution.resolved} (${ctx.messages.length} messages, ${Object.keys(dispatchTools).length} tools)`);
 
     for (let step = 0; step < config.max_steps; step++) {
       ctx.log("debug", `LLM step ${step + 1}/${config.max_steps}`);
 
-      // ctx.llm.text() handles model resolution + chain failover +
-      // reasoning-tag stripping. Empty replies fall through to the
-      // existing "no tool call" branch downstream.
-      const text = await ctx.llm.text({
-        system: systemPrompt,
-        prompt: conversation,
-        maxTokens: 2048,
-      });
-      ctx.log("info", `LLM response (${text.length} chars): ${text.slice(0, 120)}`);
-      conversation.push({ role: "assistant", content: text });
-
-      // Sleep requested by LLM
-      const sleepDuration = parseSleepRequest(text);
-      if (sleepDuration) {
-        respond(text);
-        goToSleep(sleepDuration, "Brain going to sleep");
+      let picked: { toolName: string; args: Record<string, unknown> };
+      try {
+        picked = await ctx.llm.tools({
+          tools: dispatchTools,
+          prompt: conversation,
+          system: systemPrompt,
+          maxTokens: 2048,
+          retries: 1,
+        });
+      } catch (err) {
+        // ctx.llm.tools() throws when every model in the chain fails
+        // to emit a tool call. Return and let the framework park us.
+        ctx.log("warn", `Dispatch tools call failed: ${err instanceof Error ? err.message : String(err)}`);
         return;
       }
 
-      // Tool call — execute, then either wait for async response or continue
-      const toolCall = parseToolCall(text);
-      if (toolCall) {
-        // Publish any text before the tool call JSON
-        respond(text);
+      ctx.log("info", `Dispatch tool: ${picked.toolName}`);
+      // Persist a stringified record of the choice so the next iteration
+      // sees what the brain just did.
+      conversation.push({
+        role: "assistant",
+        content: JSON.stringify({ tool: picked.toolName, args: picked.args }),
+      });
 
-        ctx.log("info", `Tool call: ${toolCall.tool}(${JSON.stringify(toolCall.args).slice(0, 100)})`);
-        const toolResult = await executeBrainTool(toolCall.tool, toolCall.args, ctx.node.id);
-        ctx.log("info", `Tool result: ${JSON.stringify(toolResult).slice(0, 150)}`);
+      if (picked.toolName === "respond") {
+        const content = String(picked.args.content ?? "").trim();
+        if (content.length > 0) {
+          ctx.respond(content);
+        }
+        return;
+      }
+
+      // Network tool: look it up in the live catalog.
+      const descriptor = networkToolByName.get(picked.toolName);
+      if (!descriptor) {
+        ctx.log("warn", `Unknown tool name from LLM: ${picked.toolName}`);
         conversation.push({
           role: "user",
-          content: `Tool result for ${toolCall.tool}:\n${JSON.stringify(toolResult, null, 2)}`,
+          content: `Tool error: "${picked.toolName}" is not a known tool. Pick one of: ${Object.keys(dispatchTools).join(", ")}.`,
         });
-
-        // If the tool expects an async response (e.g. memory, shell, http),
-        // sleep on that topic so we wake when the response arrives.
-        const expects = toolResult.expects_response as { topic: string; timeout: number } | undefined;
-        if (expects) {
-          ctx.log("info", `Waiting for response on ${expects.topic} (${expects.timeout}ms)`);
-          ctx.sleep([
-            { type: "topic", value: expects.topic },
-            { type: "timer", value: `${Math.ceil(expects.timeout / 1000)}s` },
-          ]);
-          return;
-        }
-
         continue;
       }
 
-      // No tool, no sleep — publish and let the runner handle next steps
-      respond(text);
-      return;
+      try {
+        // Publish the args directly on the node's topic — ai-sdk has
+        // already validated them against the node's declared schema.
+        ctx.publish(descriptor.topic, {
+          type: "text",
+          criticality: 3,
+          payload: { content: JSON.stringify(picked.args) },
+        });
+        ctx.log("info", `Published to ${descriptor.topic} via ${descriptor.node_name}`);
+        conversation.push({
+          role: "user",
+          content: `Dispatched to ${descriptor.topic} (handled by ${descriptor.node_name}). Continue or sleep awaiting the response.`,
+        });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        ctx.log("warn", `Publish failed: ${msg}`);
+        conversation.push({
+          role: "user",
+          content: `Publish to ${descriptor.topic} failed: ${msg}`,
+        });
+      }
+      // Continue the budget loop — the brain may want to chain another
+      // action (e.g. announce to the user that delegation happened).
     }
+
+    // Ran out of steps in this iteration — the framework will park us
+    // until the next subscribed message arrives.
+    ctx.log("info", "Brain exhausted step budget");
   } catch (err) {
     log.error({ err }, "Brain error");
-    respond(`Brain error: ${err instanceof Error ? err.message : String(err)}`);
-    goToSleep("10s", "Sleeping after error");
+    ctx.respond(`Brain error: ${err instanceof Error ? err.message : String(err)}`);
   }
+
+  // Keep BrainService import referenced even if we drop the buildServiceMap
+  // helper — the wider workspace expects this module to still pull the
+  // core package in for side-effect registration in some builds. Lifting
+  // the symbol via a noop assignment is enough.
+  void BrainService;
 };

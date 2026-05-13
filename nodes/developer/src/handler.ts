@@ -1031,7 +1031,6 @@ function publishHistoryRead(ctx: NodeContext, monorepoRoot: string, msg: Message
 
 export const handler: NodeHandler = async (ctx) => {
   if (ctx.messages.length === 0) {
-    ctx.sleep([{ type: "any" }]);
     return;
   }
 

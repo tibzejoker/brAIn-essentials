@@ -7,59 +7,219 @@
   "default_subscriptions": [
     {
       "topic": "dev.request",
-      "description": "Author a brand-new node from a natural-language description. Payload: text describing what the node should do."
+      "description": "Author a brand-new node from a natural-language description. Payload: text describing what the node should do.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "content": {
+            "type": "string",
+            "description": "Natural-language description of the node to author (what inputs it consumes, what it publishes, what behaviour it implements)."
+          },
+          "cli": {
+            "type": "string",
+            "enum": ["claude", "codex", "gemini"],
+            "description": "Optional override of which code-authoring CLI to drive. Defaults to the node's configured CLI (usually 'claude'). Pass via message metadata."
+          }
+        },
+        "required": ["content"],
+        "additionalProperties": false
+      }
     },
     {
       "topic": "dev.improve",
-      "description": "Improve an existing authored node. Payload (JSON in content or metadata): {slug, request}. Re-runs the CLI on that workspace with a 'read what's there, change this' prompt."
+      "description": "Improve an existing authored node. Payload (JSON in content or metadata): {slug, request}. Re-runs the CLI on that workspace with a 'read what's there, change this' prompt.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "slug": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Workspace slug under nodes/_dynamic/ to improve (e.g. 'echo-node-1a2b3c4d' or 'dev-1a2b3c4d')."
+          },
+          "request": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Natural-language description of the improvement to apply."
+          },
+          "cli": {
+            "type": "string",
+            "enum": ["claude", "codex", "gemini"],
+            "description": "Optional override of which code-authoring CLI to drive."
+          }
+        },
+        "required": ["slug", "request"],
+        "additionalProperties": false
+      }
     },
     {
       "topic": "dev.workspaces.list",
-      "description": "Request a snapshot of every authored workspace under nodes/_dynamic/ (registered or not). Reply on dev.workspaces."
+      "description": "Request a snapshot of every authored workspace under nodes/_dynamic/ (registered or not). Reply on dev.workspaces.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      }
     },
     {
       "topic": "dev.files.tree",
-      "description": "Request the file tree of one workspace. Payload: {slug}. Reply on dev.files."
+      "description": "Request the file tree of one workspace. Payload: {slug}. Reply on dev.files.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "slug": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Workspace slug under nodes/_dynamic/."
+          }
+        },
+        "required": ["slug"],
+        "additionalProperties": false
+      }
     },
     {
       "topic": "dev.cli.list",
-      "description": "Request the catalogue of available code-authoring CLIs (claude, codex, ...). Reply on dev.cli.available."
+      "description": "Request the catalogue of available code-authoring CLIs (claude, codex, ...). Reply on dev.cli.available.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      }
     },
     {
       "topic": "dev.history.list",
-      "description": "List on-disk transcripts of every authoring run (one .log per attempt). Payload: {slug?} — omit to list across all workspaces. Reply on dev.history."
+      "description": "List on-disk transcripts of every authoring run (one .log per attempt). Payload: {slug?} — omit to list across all workspaces. Reply on dev.history.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "slug": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Optional workspace slug to filter transcripts by. Omit to list transcripts across every workspace."
+          }
+        },
+        "additionalProperties": false
+      }
     },
     {
       "topic": "dev.history.read",
-      "description": "Read one transcript file's full content. Payload: {slug, file} — file must be a basename within the workspace's .dev-history/ folder. Reply on dev.history.content."
+      "description": "Read one transcript file's full content. Payload: {slug, file} — file must be a basename within the workspace's .dev-history/ folder. Reply on dev.history.content.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "slug": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Workspace slug whose .dev-history/ folder holds the transcript."
+          },
+          "file": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^[^/\\\\]+$",
+            "description": "Basename of the transcript file (no slashes, no '..'). Must live in <workspace>/.dev-history/."
+          }
+        },
+        "required": ["slug", "file"],
+        "additionalProperties": false
+      }
     },
     {
       "topic": "dev.files.read",
-      "description": "Read the content of one file inside an authored workspace. Payload: {slug, path} — path is relative to the workspace root, must stay inside it (256 KB cap). Reply on dev.file.content."
+      "description": "Read the content of one file inside an authored workspace. Payload: {slug, path} — path is relative to the workspace root, must stay inside it (256 KB cap). Reply on dev.file.content.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "slug": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Workspace slug under nodes/_dynamic/."
+          },
+          "path": {
+            "type": "string",
+            "minLength": 1,
+            "description": "File path relative to the workspace root. Must resolve inside the workspace (path traversal is rejected)."
+          }
+        },
+        "required": ["slug", "path"],
+        "additionalProperties": false
+      }
     },
     {
       "topic": "dev.git.log",
-      "description": "List git commits for an authored workspace. Each authoring run takes a before/after snapshot. Payload: {slug}. Reply on dev.git."
+      "description": "List git commits for an authored workspace. Each authoring run takes a before/after snapshot. Payload: {slug}. Reply on dev.git.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "slug": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Workspace slug whose local git history to list (last 50 commits)."
+          }
+        },
+        "required": ["slug"],
+        "additionalProperties": false
+      }
     },
     {
       "topic": "dev.files.history",
-      "description": "List git commits that touched ONE file in a workspace (with --follow for renames). Payload: {slug, path}. Reply on dev.file.history."
+      "description": "List git commits that touched ONE file in a workspace (with --follow for renames). Payload: {slug, path}. Reply on dev.file.history.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "slug": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Workspace slug under nodes/_dynamic/."
+          },
+          "path": {
+            "type": "string",
+            "minLength": 1,
+            "description": "File path relative to the workspace root. Must resolve inside the workspace."
+          }
+        },
+        "required": ["slug", "path"],
+        "additionalProperties": false
+      }
     },
     {
       "topic": "dev.files.diff",
-      "description": "Get the diff of one file at one commit. Payload: {slug, path, hash}. Reply on dev.file.diff."
+      "description": "Get the diff of one file at one commit. Payload: {slug, path, hash}. Reply on dev.file.diff.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "slug": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Workspace slug under nodes/_dynamic/."
+          },
+          "path": {
+            "type": "string",
+            "minLength": 1,
+            "description": "File path relative to the workspace root. Must resolve inside the workspace."
+          },
+          "hash": {
+            "type": "string",
+            "pattern": "^[0-9a-fA-F]{4,40}$",
+            "description": "Hex git commit hash (4-40 chars). Validated to prevent argument injection."
+          }
+        },
+        "required": ["slug", "path", "hash"],
+        "additionalProperties": false
+      }
     },
     {
       "topic": "types.validation_failed",
-      "description": "Framework feedback when a workspace this node authored failed validation. Used to iterate on the failing build."
+      "description": "Framework feedback when a workspace this node authored failed validation. Used to iterate on the failing build.",
+      "internal": true
     },
     {
       "topic": "types.registered",
-      "description": "Framework confirmation that an authored workspace was registered as a new node type. Triggers auto-spawn of one live instance."
+      "description": "Framework confirmation that an authored workspace was registered as a new node type. Triggers auto-spawn of one live instance.",
+      "internal": true
     },
     {
       "topic": "types.updated",
-      "description": "Framework confirmation that an authored workspace's spec changed and was re-registered."
+      "description": "Framework confirmation that an authored workspace's spec changed and was re-registered.",
+      "internal": true
     }
   ],
   "default_publishes": [

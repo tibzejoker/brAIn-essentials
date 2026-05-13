@@ -126,9 +126,13 @@ function reconcileToolSubs(ctx: NodeContext, rt: NodeRuntime): void {
       // Pass the upstream MCP tool's description + inputSchema so the
       // framework's own MCP service can re-expose them as first-class
       // tools instead of opaque bus topics.
+      // Upstream MCP tools always carry a schema — if one is missing
+      // (rare, but some servers don't declare it), fall back to a
+      // permissive empty-object schema rather than refusing the
+      // subscription (we still want the bridge to work).
       ctx.subscribe(topic, {
         description: t.description || `${rt.alias}: ${t.name}`,
-        inputSchema: (t.inputSchema ?? undefined) as Record<string, unknown> | undefined,
+        inputSchema: (t.inputSchema ?? { type: "object" }) as Record<string, unknown>,
       });
       rt.subscribedToolTopics.add(topic);
     }

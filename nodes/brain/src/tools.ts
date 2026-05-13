@@ -39,8 +39,6 @@ export async function executeBrainTool(
       return stopNode(brain, args, callerNodeId);
     case "start_node":
       return startNode(brain, args, callerNodeId);
-    case "wake_node":
-      return wakeNode(brain, args, callerNodeId);
     case "rewire":
       return rewire(brain, args);
     case "publish_message":
@@ -71,7 +69,6 @@ Available tools (respond with ONE JSON tool call at a time):
 - kill_node(node_id, reason?): Permanently destroy a node.
 - stop_node(node_id, reason?): Pause a node (can be restarted).
 - start_node(node_id): Restart a stopped node.
-- wake_node(node_id, message?): Wake a sleeping node.
 
 ## Network wiring
 - rewire(node_id, add_topics?, remove_topics?): Modify a node's subscriptions.
@@ -139,13 +136,17 @@ async function spawnNode(
   // SubscriptionConfig requires a description; when the LLM omits one
   // we fall back to the topic name so the framework's MCP exposure
   // still has something readable to publish.
-  let subscriptions: Array<{ topic: string; description: string }> | undefined;
+  // When the brain's `spawn_node` tool overrides subscriptions, the LLM
+  // hasn't authored schemas — fall back to internal listeners so the
+  // framework's strict validator accepts them. Real public commands
+  // should come from the node type's own config.json schema declaration.
+  let subscriptions: Array<{ topic: string; description: string; internal: true }> | undefined;
   const rawSubs = args.subscriptions;
   if (Array.isArray(rawSubs) && rawSubs.length > 0) {
     subscriptions = rawSubs.map((s) => {
-      if (typeof s === "string") return { topic: s, description: s };
+      if (typeof s === "string") return { topic: s, description: s, internal: true as const };
       const obj = s as { topic: string; description?: string };
-      return { topic: obj.topic, description: obj.description ?? obj.topic };
+      return { topic: obj.topic, description: obj.description ?? obj.topic, internal: true as const };
     });
   } else if (rawSubs === null || rawSubs === undefined) {
     // No subscriptions — use type defaults (pass undefined, let the framework decide)
@@ -200,15 +201,6 @@ async function startNode(
 ): Promise<ToolResult> {
   const started = await brain.startNode(args.node_id as string, callerNodeId, args.message as string | undefined);
   return { success: started };
-}
-
-function wakeNode(
-  brain: BrainService,
-  args: Record<string, unknown>,
-  callerNodeId: string,
-): Promise<ToolResult> {
-  const woken = brain.wakeNode(args.node_id as string, callerNodeId, args.message as string | undefined);
-  return Promise.resolve({ success: woken });
 }
 
 function rewire(brain: BrainService, args: Record<string, unknown>): Promise<ToolResult> {

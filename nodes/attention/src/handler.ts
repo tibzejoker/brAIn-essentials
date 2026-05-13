@@ -28,8 +28,7 @@ let lastIntents: IntentRecord[] = [];
  *    cursor and forwards each to `intent.output` (raw event) and
  *    `brain.input` (so the consciousness receives every intent and
  *    its own LLM decides what to do with it).
- * 3. Handler asks to sleep for `ATTENTION_TICK_MS` (default 1.5s) so
- *    the framework re-wakes us even when no bus message landed.
+ * 3. Framework manages dormancy automatically after the handler returns.
  */
 export const handler: NodeHandler = async (ctx) => {
   ctx.log("info", `handler invoked (messages=${ctx.messages.length}, servicesReady=${servicesReady ? "set" : "unset"})`);
@@ -50,7 +49,6 @@ export const handler: NodeHandler = async (ctx) => {
     // keep going — maybe some services ARE up and polling will still work
   }
 
-  const tickMs = Number(process.env.ATTENTION_TICK_MS ?? "1500");
   const intents = await intentClient.poll();
 
   if (intents.length > 0) {
@@ -78,14 +76,6 @@ export const handler: NodeHandler = async (ctx) => {
   ctx.state.processed = processed;
   ctx.state.last_cursor = intentClient.since;
   ctx.state.last_intents = lastIntents.slice(-20);
-
-  // Re-wake ourselves even in the absence of a bus message. Any message
-  // that lands on our subscribed topics resets the budget and
-  // interrupts the sleep, so we stay responsive.
-  ctx.sleep([
-    { type: "timer", value: `${tickMs}ms` },
-    { type: "any" },
-  ]);
 };
 
 function publishIntent(
