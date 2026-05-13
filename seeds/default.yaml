@@ -1,0 +1,166 @@
+# Default seed — the canonical "starter brAIn" network. Auto-applied
+# on first boot when the DB is empty (looked up by name, regardless of
+# which store ships it). Pulls in nodes from several sister-stores:
+# brAIn-essentials, brAIn-ui, brAIn-llm, brAIn-tools, brAIn-memory.
+# Any store not installed locally will show its types in red and the
+# dashboard's Apply button will be greyed out until you install them.
+
+nodes:
+  # === Human chat — the user talks here ===
+  - type: chat
+    name: human
+    description: "Human chat interface. Messages go to the brain, responses come back."
+    priority: 5
+    position: { x: 50, y: 350 }
+    subscriptions:
+      - topic: "chat.response"
+      - topic: "brain.output"
+      - topic: "report.*"
+      - topic: "dev.result"
+      - topic: "cmd.output"
+      - topic: "http.response"
+      - topic: "reminder.*"
+      - topic: "mem.response"
+
+  # === Central brain — orchestrates everything ===
+  - type: brain
+    name: consciousness
+    description: "Central intelligence. Receives human messages, delegates to other nodes, responds."
+    priority: 10
+    position: { x: 450, y: 350 }
+    subscriptions:
+      - topic: "chat.input"
+      - topic: "alerts.*"
+      - topic: "report.*"
+      - topic: "dev.result"
+      - topic: "cmd.output"
+      - topic: "http.response"
+      - topic: "reminder.*"
+      - topic: "mem.response"
+    config_overrides:
+      model: "ollama/gemma4:e4b"
+      response_topic: "chat.response"
+      idle_sleep: "1m"
+      max_steps: 8
+
+  # ── REASONING ──────────────────────────────
+
+  - type: llm-basic
+    name: analyst
+    description: "Reasoning agent. The brain sends it analysis tasks, it returns reports."
+    priority: 5
+    position: { x: 850, y: 150 }
+    subscriptions:
+      - topic: "task.analyze"
+    config_overrides:
+      model: "ollama/gemma4:e4b"
+      system_prompt: "You are an analyst. Answer questions precisely and concisely. Focus on facts."
+      response_topic: "report.analysis"
+
+  - type: developer
+    name: dev-agent
+    description: "Creates new node types on demand. The brain asks it to build new capabilities."
+    priority: 8
+    position: { x: 850, y: 350 }
+    subscriptions:
+      - topic: "dev.request"
+      - topic: "dev.improve"
+      - topic: "dev.workspaces.list"
+      - topic: "dev.files.tree"
+      - topic: "dev.cli.list"
+      - topic: "dev.history.list"
+      - topic: "dev.history.read"
+      - topic: "dev.files.read"
+      - topic: "dev.git.log"
+      - topic: "dev.files.history"
+      - topic: "dev.files.diff"
+      - topic: "types.validation_failed"
+      - topic: "types.registered"
+      - topic: "types.updated"
+    config_overrides:
+      cli: "claude"
+      response_topic: "dev.result"
+      timeout_ms: 300000
+      handler_timeout_ms: 600000
+
+  # ── TOOLS ──────────────────────────────────
+
+  - type: terminal
+    name: shell
+    description: "Executes whitelisted shell commands for the brain."
+    priority: 3
+    position: { x: 850, y: 550 }
+    subscriptions:
+      - topic: "cmd.exec"
+    config_overrides:
+      response_topic: "cmd.output"
+      timeout_ms: 15000
+      allowed_commands: ["ls", "cat", "head", "tail", "wc", "date", "whoami", "df", "uptime", "git", "find", "grep"]
+
+  - type: http-bridge
+    name: web-fetch
+    description: "Fetches URLs and APIs for the brain."
+    priority: 3
+    position: { x: 600, y: 600 }
+    subscriptions:
+      - topic: "http.request"
+    config_overrides:
+      response_topic: "http.response"
+
+  - type: reminder
+    name: reminder
+    description: "Schedules reminders. Send '30m Do the thing' on reminder.set, it fires when time is up."
+    priority: 3
+    position: { x: 300, y: 600 }
+    subscriptions:
+      - topic: "reminder.set"
+
+  # ── MEMORY ─────────────────────────────────
+
+  - type: memory-proxy
+    name: memory-proxy
+    description: "Intelligent memory gateway. Queries the right stores, synthesizes results."
+    priority: 5
+    position: { x: 200, y: 150 }
+    subscriptions:
+      - topic: "mem.ask"
+      - topic: "mem.store"
+      - topic: "memory.result"
+      - topic: "memory-vector.result"
+    config_overrides:
+      model: "ollama/gemma4:e4b"
+      response_topic: "mem.response"
+
+  - type: memory-consolidator
+    name: memory-janitor
+    description: "Periodically reviews, consolidates, and cleans up memories."
+    priority: 2
+    position: { x: -50, y: 150 }
+    subscriptions:
+      - topic: "memory.result"
+    config_overrides:
+      model: "ollama/gemma4:e4b"
+      max_iterations: 8
+
+  - type: memory
+    name: memory
+    description: "Fast key-value memory. Facts, names, preferences."
+    priority: 3
+    position: { x: 50, y: 50 }
+    subscriptions:
+      - topic: "memory.store"
+      - topic: "memory.recall"
+      - topic: "memory.search"
+      - topic: "memory.update"
+      - topic: "memory.delete"
+      - topic: "memory.list"
+
+  - type: memory-vector
+    name: long-term-memory
+    description: "Vector memory with semantic search."
+    priority: 3
+    position: { x: 400, y: 50 }
+    subscriptions:
+      - topic: "memory-vector.store"
+      - topic: "memory-vector.search"
+      - topic: "memory-vector.index"
