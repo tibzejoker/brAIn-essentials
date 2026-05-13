@@ -132,9 +132,24 @@ When a game (hangman, tictactoe, brainpet, …) is in a \`playing\` state:
     ? `\n\n⚠️ ${ctx.state._budget_warning}`
     : "";
 
+  // Separate human input from service callbacks. The LLM should ALWAYS
+  // handle a fresh human input first — routing it through the right
+  // game/service tool — before relaying any incidental callback that
+  // happens to have arrived in the same wake. Bundling them in one blob
+  // lets gemma pick the wrong priority and respond about a game event
+  // while the player's actual move ("q") sits unprocessed.
+  const humanMessages = filteredMessages.filter((m) => m.topic === "chat.input");
+  const otherMessages = filteredMessages.filter((m) => m.topic !== "chat.input");
+  const humanBlock = humanMessages.length > 0
+    ? `\n\n=== HUMAN INPUT (highest priority — handle FIRST) ===\n${humanMessages.map(formatMessage).join("\n")}`
+    : "";
+  const otherBlock = otherMessages.length > 0
+    ? `\n\n=== Other signals (service callbacks, observations) ===\n${otherMessages.map(formatMessage).join("\n")}`
+    : "";
+
   conversation.push({
     role: "user",
-    content: `${wakeNotice}Network iteration ${iterationState + 1}.\n\nIncoming messages:\n${messagesSummary}${budgetNotice}`,
+    content: `${wakeNotice}Network iteration ${iterationState + 1}.${humanBlock}${otherBlock}${budgetNotice}`,
   });
 
   // Trim to avoid context overflow (keep last 40 turns)
