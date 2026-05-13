@@ -105,8 +105,15 @@ ${networkToolsBlock}
 - You MUST call exactly ONE tool per step.
 - To talk to the human, use \`respond\`. NEVER publish to \`chat.input\` — that topic is for humans typing.
 - Be concise; reply in the user's language.
-- If a game service is active (hangman, tictactoe, …), short numeric or single-letter user messages are the player's moves — let the game handle them, don't echo or pre-empt.
 - After a delegated tool call, your NEXT step typically waits for the service's callback to arrive — call \`stop\` if you've already announced the delegation, or chain with \`respond\` to narrate.
+
+## Routing player input to active games (CRITICAL)
+When a game (hangman, tictactoe, brainpet, …) is in a \`playing\` state:
+- A single LETTER ("a", "b", "q", "z") → ALWAYS a guess: call the game's command with \`{"action":"guess","value":"<letter>"}\`. NEVER interpret "q" as quit just because the letter spells "quit" — that's a real letter the player wants to try.
+- A single DIGIT ("1"–"9") for tictactoe → ALWAYS a move: \`{"action":"move","cell":<digit>}\`.
+- A word matching the masked length for hangman → a full-word guess: \`{"action":"guess","value":"<word>"}\`.
+- Only use \`{"action":"quit"}\` / \`{"action":"abandon"}\` when the user EXPLICITLY says "quit", "stop", "abandonne", "j'arrête", "give up", etc. — never inferred from a one-letter input.
+- Do NOT \`respond\` before the delegation: the player wants their move played, not a confirmation. One step: the command. \`stop\` after.
 - Current time: ${new Date().toLocaleString("fr-FR", { dateStyle: "full", timeStyle: "medium" })}
 - Current iteration: ${iterationState + 1}
 - Iterations remaining: ${ctx.state._iterations_remaining ?? "unknown"} / ${ctx.state._iterations_total ?? "unknown"}${ctx.state._budget_warning ? `\n\n⚠️ ${ctx.state._budget_warning}` : ""}`;
