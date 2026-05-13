@@ -1,27 +1,25 @@
 # echo-pingpong — smallest possible interactive demo.
 #
-# Two nodes wired together so you can SEE the bus + chat + a simple
-# service work end to end: pick `demo.ping` from the chat's topic
-# dropdown, type anything, the echo node bounces it back on
-# `demo.pong` which the chat is subscribed to.
+# Type anything in the chat → it goes out on chat.input → echo
+# bounces it back on chat.response → chat displays it. No topic
+# dropdown to navigate, no special setup. Chat ignores its own
+# publishes via anti-loop, so the only thing it surfaces back is
+# echo's reply.
 
 nodes:
   - type: chat
     name: human
-    description: "Chat UI. Send to demo.ping (pick from the dropdown), see the bounce on demo.pong."
+    description: "Chat UI — type anything, echo bounces it back."
     priority: 5
     position: { x: 50, y: 250 }
-    subscriptions:
-      - topic: "demo.pong"
-        description: "Echoed-back messages from the ping-pong node."
 
   - type: echo
     name: ping-pong
-    description: "Trivial echo — anything on demo.ping comes back on demo.pong."
+    description: "Trivial echo — anything on chat.input comes back on chat.response."
     priority: 1
     position: { x: 450, y: 250 }
     subscriptions:
-      - topic: "demo.ping"
-        description: "Anything you send here gets echoed back."
+      - topic: "chat.input"
+        description: "Anything the user types in the chat."
     config_overrides:
-      response_topic: "demo.pong"
+      response_topic: "chat.response"
