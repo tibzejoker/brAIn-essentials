@@ -152,8 +152,12 @@ When a game (hangman, tictactoe, brainpet, …) is in a \`playing\` state:
     content: `${wakeNotice}Network iteration ${iterationState + 1}.${humanBlock}${otherBlock}${budgetNotice}`,
   });
 
-  // Trim to avoid context overflow (keep last 40 turns)
-  while (conversation.length > 40) {
+  // Keep the rolling window tight. Local 4–8B models (gemma4, qwen2,
+  // etc.) get noticeably less reliable at picking a tool once the
+  // history grows past ~10 turns of repetitive "Network iteration N"
+  // blobs. 8 turns ≈ last 4 exchanges, enough for short multi-step
+  // dialogs while keeping the prompt focused on the *current* wake.
+  while (conversation.length > 8) {
     conversation.shift();
   }
 
