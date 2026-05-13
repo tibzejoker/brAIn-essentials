@@ -56,8 +56,16 @@ CRITICAL: every entry in \`default_subscriptions\` MUST have BOTH \`topic\` and 
 }
 \`\`\`
 
-Add \`"@brain/core": "workspace:*"\` to dependencies ONLY if you actually use core
-helpers (LLMRegistry, logger, etc.). Otherwise keep it out — the SDK types are enough.
+Add \`"@brain/core": "workspace:*"\` to dependencies ONLY if you need a raw
+core helper (e.g. logger). The SDK types are usually enough.
+
+For LLM calls, use \`ctx.llm.*\` from \`@brain/sdk\` — do NOT import
+\`LLMRegistry\` / \`generateText\` directly. The facade handles model
+resolution (per-node override → global default → fallback chain),
+reasoning-text extraction, retry/failover and emits llm.usage events.
+Available methods:
+  await ctx.llm.text({ prompt, system?, model?, maxTokens? })
+  await ctx.llm.tool({ tool: { name, description, inputSchema }, prompt, system? })
 
 ### 3. tsconfig.json (COPY EXACTLY — wrong rootDir means dist/src/handler.js instead of dist/handler.js, framework rejects)
 \`\`\`json

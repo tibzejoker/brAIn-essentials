@@ -1,5 +1,5 @@
 import type { NodeHandler, TextPayload, AlertPayload } from "@brain/sdk";
-import { LLMRegistry, BrainService, generateText, logger } from "@brain/core";
+import { BrainService, logger } from "@brain/core";
 import { executeBrainTool, BRAIN_TOOL_DESCRIPTIONS } from "./tools";
 import { parseToolCall, parseSleepRequest } from "./tool-parser";
 
@@ -45,13 +45,11 @@ Example — to fetch a URL:
 }
 
 interface BrainConfig {
-  model: string;
   max_steps: number;
 }
 
 function getConfig(overrides: Record<string, unknown>): BrainConfig {
   return {
-    model: (overrides.model as string | undefined) ?? "ollama/gemma4:e4b",
     max_steps: (overrides.max_steps as number | undefined) ?? 10,
   };
 }
@@ -69,7 +67,6 @@ function formatMessage(msg: { from: string; topic: string; criticality: number; 
 
 export const handler: NodeHandler = async (ctx) => {
   const config = getConfig(ctx.node.config_overrides ?? {} as Record<string, unknown>);
-  const registry = LLMRegistry.getInstance();
 
   // Handle clear state request from UI
   if (ctx.node.config_overrides?._clear_state) {
@@ -194,32 +191,20 @@ While sleeping, you'll only wake up if a message arrives on your subscribed topi
 
   // --- Main LLM loop ---
   try {
-    await registry.initialize();
-    ctx.log("info", `LLM call → ${config.model} (${ctx.messages.length} messages)`);
-    const model = registry.getModel(config.model);
+    const resolution = ctx.llm.resolveModel();
+    ctx.log("info", `LLM call → ${resolution.resolved} (${ctx.messages.length} messages)`);
 
     for (let step = 0; step < config.max_steps; step++) {
       ctx.log("debug", `LLM step ${step + 1}/${config.max_steps}`);
 
-      const result = await generateText({
-        model,
+      // ctx.llm.text() handles model resolution + chain failover +
+      // reasoning-tag stripping. Empty replies fall through to the
+      // existing "no tool call" branch downstream.
+      const text = await ctx.llm.text({
         system: systemPrompt,
-        messages: conversation,
-        maxOutputTokens: 2048,
-        abortSignal: ctx.signal,
+        prompt: conversation,
+        maxTokens: 2048,
       });
-
-      // AI SDK v6: text may be in result.text or result.steps[0].text
-      const r = result as unknown as Record<string, unknown>;
-      let text = "";
-      if (typeof result.text === "string" && result.text) {
-        text = result.text;
-      } else if (Array.isArray(r.steps) && r.steps.length > 0) {
-        const s = r.steps[0] as Record<string, unknown>;
-        if (typeof s.text === "string" && s.text) text = s.text;
-        if (!text && typeof s.reasoning === "string") text = s.reasoning;
-      }
-      if (!text && typeof r.reasoning === "string") text = r.reasoning;
       ctx.log("info", `LLM response (${text.length} chars): ${text.slice(0, 120)}`);
       conversation.push({ role: "assistant", content: text });
 
