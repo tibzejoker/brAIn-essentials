@@ -36,19 +36,16 @@ export const handler: NodeHandler = async (ctx) => {
     ctx.log("info", "Conversation state cleared via UI");
   }
 
-  // Build situation awareness — but filter out two kinds of "ambient"
-  // chat.input that would only seduce the LLM into being too helpful:
-  //
-  //   1. `from` starts with `system.` — that's UI buttons sending things
-  //      like "5" from a game node's UI. The game already handles them.
-  //   2. metadata.from_game is set — the message is part of an in-game
-  //      narration loop or a game-tagged player input. Stay out of it.
-  const filteredMessages = ctx.messages.filter((m) => {
-    if (m.from.startsWith("system.")) return false;
-    const meta = m.metadata as Record<string, unknown> | undefined;
-    if (meta?.from_game !== undefined || meta?.is_game_move === true) return false;
-    return true;
-  });
+  // The brain is the sole NLU gateway — every human input (whether
+  // typed in the main chat or in a game UI's input field) reaches us
+  // on chat.input and we decide where it goes. Previously we filtered
+  // out `system.*` senders and `is_game_move:true` because the game
+  // nodes USED to also subscribe to chat.input and process moves
+  // themselves; that path is gone, so the filter just silenced the
+  // player. The system prompt + tool catalog give us enough context to
+  // route correctly (active game state arrives on game.*.state, the
+  // matching command tool is in the catalog).
+  const filteredMessages = ctx.messages;
   const hasMessages = filteredMessages.length > 0;
 
   // Short-circuit when there's nothing to think about: don't burn an
