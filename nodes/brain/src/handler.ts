@@ -48,34 +48,6 @@ export const handler: NodeHandler = async (ctx) => {
   const filteredMessages = ctx.messages;
   const hasMessages = filteredMessages.length > 0;
 
-  // Track every game.*.state we observe so we can surface "what games
-  // are currently being played" as explicit context to the LLM. Without
-  // this gemma reads a bare "I" as ambiguous and asks the user to
-  // clarify, instead of routing it as a hangman guess. The brain is
-  // already subscribed to game.*.state for this exact reason.
-  if (!ctx.state.activeGames) ctx.state.activeGames = {};
-  const activeGames = ctx.state.activeGames as Record<string, unknown>;
-  for (const m of filteredMessages) {
-    const match = m.topic.match(/^game\.([a-z0-9_-]+)\.state$/);
-    if (!match) continue;
-    try {
-      const parsed = JSON.parse((m.payload as TextPayload).content);
-      activeGames[match[1]] = parsed;
-    } catch { /* malformed state — ignore */ }
-  }
-  const activeGamesBlock = Object.entries(activeGames)
-    .filter(([, s]) => (s as { status?: string }).status && (s as { status?: string }).status !== "idle")
-    .map(([name, s]) => {
-      const st = s as { status?: string; masked?: string; lives?: number; max_lives?: number; theme?: string; board?: unknown };
-      const bits: string[] = [`status=${st.status}`];
-      if (st.theme) bits.push(`theme=${st.theme}`);
-      if (st.masked) bits.push(`masked="${st.masked}"`);
-      if (typeof st.lives === "number") bits.push(`${st.lives}/${st.max_lives ?? "?"} lives`);
-      if (st.board) bits.push(`board=${JSON.stringify(st.board)}`);
-      return `- ${name}: ${bits.join(", ")}`;
-    })
-    .join("\n");
-
   // Short-circuit when there's nothing to think about: don't burn an
   // LLM call (and tokens) just to have the model emit "sleep". The
   // framework now parks us automatically until the next message lands.
@@ -167,20 +139,17 @@ When a game (hangman, tictactoe, brainpet, …) is in a \`playing\` state:
   // lets gemma pick the wrong priority and respond about a game event
   // while the player's actual move ("q") sits unprocessed.
   const humanMessages = filteredMessages.filter((m) => m.topic === "chat.input");
-  const otherMessages = filteredMessages.filter((m) => m.topic !== "chat.input" && !m.topic.endsWith(".state"));
+  const otherMessages = filteredMessages.filter((m) => m.topic !== "chat.input");
   const humanBlock = humanMessages.length > 0
     ? `\n\n=== HUMAN INPUT (highest priority — handle FIRST) ===\n${humanMessages.map(formatMessage).join("\n")}`
     : "";
   const otherBlock = otherMessages.length > 0
     ? `\n\n=== Other signals (service callbacks, observations) ===\n${otherMessages.map(formatMessage).join("\n")}`
     : "";
-  const gamesBlock = activeGamesBlock
-    ? `\n\n=== ACTIVE GAMES (use this to disambiguate short user inputs) ===\n${activeGamesBlock}\nA single letter / digit from the user during an active game is ALWAYS a move for THAT game — route via the game's command tool.`
-    : "";
 
   conversation.push({
     role: "user",
-    content: `${wakeNotice}Network iteration ${iterationState + 1}.${gamesBlock}${humanBlock}${otherBlock}${budgetNotice}`,
+    content: `${wakeNotice}Network iteration ${iterationState + 1}.${humanBlock}${otherBlock}${budgetNotice}`,
   });
 
   // Keep the rolling window tight. Local 4–8B models (gemma4, qwen2,
