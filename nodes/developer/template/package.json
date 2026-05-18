@@ -8,11 +8,13 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@brain/sdk": "workspace:*"
+    "@brain/sdk": "workspace:*",
+    "better-sqlite3": "^12.8.0"
   },
   "devDependencies": {
     "typescript": "^5.4.0",
     "vitest": "^3.2.4",
-    "@types/node": "^20.11.0"
+    "@types/node": "^20.11.0",
+    "@types/better-sqlite3": "^7.6.13"
   }
 }

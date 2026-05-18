@@ -38,6 +38,12 @@ export const onSpawn: NodeOnSpawn = (info) => {
 // Use for: closing sockets, flushing buffers. Optional; delete if unused.
 // ============================================================================
 export const teardown: NodeTeardown = (info) => {
+  // TODO: close sockets, flush pending state. If you opened a DB via
+  // ./db.ts:
+  //   import { closeDb } from "./db";
+  //   closeDb(<your-data-dir>);   // dataDir isn't on `info` — keep it
+  //                                  in a module-level Map<id, string>
+  //                                  written from onSpawn if you need it.
   void info;
   return Promise.resolve();
 };
@@ -88,7 +94,15 @@ export const handler: NodeHandler = async (ctx: NodeContext) => {
 
     // d) Per-node sandboxed data dir on disk (auto-created, 0o700).
     //    Good for SQLite DBs, downloaded files, anything that should
-    //    survive process restart.
+    //    survive process restart. The scaffold ships ./db.ts which
+    //    opens a better-sqlite3 store under this dir — uncomment when
+    //    your node needs real persistence beyond ctx.state, otherwise
+    //    delete db.ts + the better-sqlite3 dep from package.json.
+    //
+    //    import { openDb } from "./db";
+    //    const db = openDb(ctx.dataDir);
+    //    db.prepare("INSERT INTO items(key,value,created_at,updated_at) VALUES (?,?,?,?)")
+    //      .run("hello", "world", Date.now(), Date.now());
     void ctx.dataDir;
 
     // e) Structured logging (level + message + optional data object).
