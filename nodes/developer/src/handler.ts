@@ -276,9 +276,21 @@ ctx.llm.text / .tool / .tools, onSpawn + teardown stubs, a passing test).
    in src/handler.ts (delete unused ctx.* example branches, keep what
    you need + add the actual logic), and in tests/handler.test.ts
    (update the topic / args to match your config).
-4. Run: cd ${workspacePath} && pnpm install --no-frozen-lockfile && npx tsc && npx vitest run
-5. Fix any compile or test errors, rebuild, retest until all pass.
-6. Stop when \`dist/handler.js\` exists and \`npx vitest run\` exits 0.
+4. Write REAL tests, not no-ops:
+   - tests/handler.test.ts MUST exercise the actual behaviour
+     (publish a message that triggers the node, assert the
+     respond/publish output, assert ctx.state changed if relevant).
+     Replace the example assertions with checks against YOUR logic.
+   - tests/handler.e2e.test.ts is opt-in (excluded from \`pnpm test\`
+     via the vitest config; run with \`pnpm test:e2e\`). Update its
+     TEMPLATE_NAME / TEMPLATE_PUBLIC_TOPIC references and replace
+     the \`expect(true).toBe(true)\` with a real assertion about the
+     side-effect on the bus (the node's published events or chat
+     responses). If the e2e genuinely doesn't make sense for this
+     node, delete the file.
+5. Run: cd ${workspacePath} && pnpm install --no-frozen-lockfile && npx tsc && npx vitest run
+6. Fix any compile or test errors, rebuild, retest until all pass.
+7. Stop when \`dist/handler.js\` exists and \`npx vitest run\` exits 0.
 
 Do NOT recreate files from scratch — the scaffold has the right
 shape, edit it in place. Do NOT explain. Do NOT register or spawn —
