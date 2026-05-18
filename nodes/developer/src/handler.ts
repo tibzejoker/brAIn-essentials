@@ -6,6 +6,51 @@ import { BrainService, CLIRegistry } from "@brain/core";
 import { NODE_TEMPLATE_DOCS } from "./template";
 import { v4 as uuid } from "uuid";
 
+/**
+ * Absolute path to the on-disk node scaffold shipped with this dev
+ * node. We copy it into the target workspace BEFORE invoking the CLI
+ * agent so the agent reads a working compile-ready tree instead of
+ * recreating each file from prose. Saves tokens, cuts iteration time,
+ * and guarantees every brAIn-supported primitive shows up in the
+ * scaffold (subscriptions internal/public, ctx.llm.text/tool/tools,
+ * ctx.publish, ctx.respond, ctx.state, ctx.dataDir, onSpawn/teardown,
+ * tests).
+ *
+ * Resolved at module-load via __dirname → ../template/  (handler.ts
+ * is at dist/handler.js after compile, so the relative jump is one
+ * dir up).
+ */
+const TEMPLATE_DIR = path.resolve(__dirname, "..", "template");
+
+/**
+ * Copy the scaffold into `target`. Skips files that already exist so
+ * a retry on a partial workspace doesn't clobber CLI-edited content.
+ * Replaces every `TEMPLATE_NAME` occurrence inside the copied files
+ * with the slug — the CLI agent then edits the schema / handler logic
+ * but doesn't have to chase rename tasks.
+ */
+function copyTemplate(target: string, slug: string): { copied: string[] } {
+  const copied: string[] = [];
+  if (!fs.existsSync(TEMPLATE_DIR)) {
+    throw new Error(`developer: template dir missing at ${TEMPLATE_DIR}`);
+  }
+  const walk = (src: string, dst: string): void => {
+    fs.mkdirSync(dst, { recursive: true });
+    for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
+      const sp = path.join(src, entry.name);
+      const dp = path.join(dst, entry.name);
+      if (entry.isDirectory()) { walk(sp, dp); continue; }
+      if (fs.existsSync(dp)) continue;
+      const raw = fs.readFileSync(sp, "utf-8");
+      const subbed = raw.replace(/TEMPLATE_NAME/g, slug);
+      fs.writeFileSync(dp, subbed);
+      copied.push(path.relative(target, dp));
+    }
+  };
+  walk(TEMPLATE_DIR, target);
+  return { copied };
+}
+
 interface DevConfig {
   cli: string;
   timeout_ms: number;
@@ -212,18 +257,35 @@ function runCli(
 function buildInitialPrompt(workspacePath: string, request: string): string {
   return `You are authoring a new brAIn node in: ${workspacePath}
 
-${NODE_TEMPLATE_DOCS}
+## The scaffold is ALREADY ON DISK
+A working compile-ready template has been copied to ${workspacePath}:
+  config.json, package.json, tsconfig.json, vitest.config.ts,
+  src/handler.ts, tests/handler.test.ts.
 
-## Requested node
-${request}
+It already demonstrates every framework primitive (subscriptions with
+inputSchema, ctx.respond / ctx.publish / ctx.state / ctx.dataDir / ctx.log,
+ctx.llm.text / .tool / .tools, onSpawn + teardown stubs, a passing test).
 
-## Instructions
-1. Create ALL required files (config.json, package.json, tsconfig.json, vitest.config.ts, src/handler.ts, tests/handler.test.ts) in ${workspacePath}.
-2. Run: cd ${workspacePath} && pnpm install --no-frozen-lockfile && npx tsc && npx vitest run
-3. Fix any compile or test errors, rebuild, retest until all pass.
-4. Stop when \`dist/handler.js\` exists and \`npx vitest run\` exits 0.
+## Your job
+1. Read the scaffold. Identify the placeholders (\`TEMPLATE_NAME\` was
+   pre-renamed to the slug; placeholders that remain are
+   \`TEMPLATE_DESCRIPTION\`, \`TEMPLATE_TAG\`, \`TEMPLATE_PUBLIC_TOPIC\`).
+2. EDIT the existing files to implement: ${request}
+3. Replace every remaining \`TEMPLATE_*\` placeholder with real values
+   in config.json (description, tags, public topic name + inputSchema),
+   in src/handler.ts (delete unused ctx.* example branches, keep what
+   you need + add the actual logic), and in tests/handler.test.ts
+   (update the topic / args to match your config).
+4. Run: cd ${workspacePath} && pnpm install --no-frozen-lockfile && npx tsc && npx vitest run
+5. Fix any compile or test errors, rebuild, retest until all pass.
+6. Stop when \`dist/handler.js\` exists and \`npx vitest run\` exits 0.
 
-Do NOT explain; just author and build. Do not attempt to register or spawn — the framework does that automatically once your build and tests pass.`;
+Do NOT recreate files from scratch — the scaffold has the right
+shape, edit it in place. Do NOT explain. Do NOT register or spawn —
+the framework auto-registers once validation passes.
+
+Reference (for things the scaffold doesn't show):
+${NODE_TEMPLATE_DOCS}`;
 }
 
 function buildRetryPrompt(workspacePath: string, request: string, phase: string, errors: string): string {
@@ -443,6 +505,17 @@ async function handleNewRequest(
   if (!fs.existsSync(dynamicDir)) fs.mkdirSync(dynamicDir, { recursive: true });
   const workspacePath = path.join(dynamicDir, slug);
   fs.mkdirSync(workspacePath, { recursive: true });
+
+  // Pre-copy the scaffold so the CLI agent reads a compile-ready tree
+  // instead of synthesising every file from prose. Cuts the prompt's
+  // job to "edit these N existing files" → fewer tokens, fewer
+  // hallucinated paths, fewer retry-loops on missing-file validations.
+  try {
+    const { copied } = copyTemplate(workspacePath, slug);
+    ctx.log("info", `[${slug}] scaffold copied (${copied.length} files): ${copied.join(", ")}`);
+  } catch (err) {
+    ctx.log("warn", `[${slug}] template copy failed: ${err instanceof Error ? err.message : String(err)} — falling back to from-scratch prompt`);
+  }
 
   const ws: WorkspaceMeta = {
     slug, path: workspacePath,

@@ -1,0 +1,33 @@
+{
+  "name": "TEMPLATE_NAME",
+  "description": "TEMPLATE_DESCRIPTION — one sentence explaining what this node does on the network.",
+  "tags": ["TEMPLATE_TAG"],
+  "default_authority": 0,
+  "default_priority": 1,
+  "default_subscriptions": [
+    {
+      "topic": "TEMPLATE_PUBLIC_TOPIC",
+      "description": "Public command this node accepts from any sender. Must have an inputSchema so the framework surfaces it as a tool the brain can call.",
+      "inputSchema": {
+        "type": "object",
+        "required": ["action"],
+        "additionalProperties": false,
+        "properties": {
+          "action": { "type": "string", "description": "What to do — e.g. 'start', 'query', 'reset'." },
+          "value":  { "type": "string", "description": "Free-form payload for the action." }
+        }
+      }
+    },
+    {
+      "topic": "time.tick",
+      "description": "Optional heartbeat from the clock node. Remove if you don't need a periodic wake.",
+      "internal": true
+    }
+  ],
+  "default_publishes": [
+    "chat.response",
+    "TEMPLATE_PUBLIC_TOPIC.event"
+  ],
+  "has_ui": false,
+  "supports_transport": ["process"]
+}
