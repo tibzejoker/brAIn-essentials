@@ -5,7 +5,8 @@
   "main": "dist/handler.js",
   "scripts": {
     "build": "tsc",
-    "test": "vitest run"
+    "test": "vitest run",
+    "test:e2e": "vitest run tests/**/*.e2e.test.ts"
   },
   "dependencies": {
     "@brain/sdk": "workspace:*",
