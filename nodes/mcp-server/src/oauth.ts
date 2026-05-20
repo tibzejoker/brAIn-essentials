@@ -34,7 +34,7 @@ import type {
   OAuthTokens,
 } from "@modelcontextprotocol/sdk/shared/auth.js";
 import type { OAuthClientProvider } from "@modelcontextprotocol/sdk/client/auth.js";
-import { logger } from "@brain/core";
+import { logger, getNodeDataRoot } from "@brain/core";
 
 export interface OAuthEvent {
   kind: "auth-required";
@@ -50,14 +50,21 @@ interface PersistedState {
   codeVerifier?: string;
 }
 
-const STORAGE_ROOT = resolve(process.cwd(), "data", "mcp-oauth");
 const REDIRECT_URL = process.env.BRAIN_OAUTH_REDIRECT_URL
   ?? "http://localhost:3000/mcp/oauth/callback";
+
+// OAuth token store lives in the shared <dataRoot>/mcp-oauth, next to
+// brain.db — resolved lazily (getNodeDataRoot is <dataRoot>/nodes, so its
+// parent is the data root) rather than process.cwd(), which varies by how
+// the API was launched.
+function storageRoot(): string {
+  return resolve(getNodeDataRoot(), "..", "mcp-oauth");
+}
 
 function storagePath(alias: string): string {
   // alias is user-provided (the JSON map key); keep filenames safe.
   const safe = alias.replace(/[^A-Za-z0-9._-]/g, "_");
-  return resolve(STORAGE_ROOT, `${safe}.json`);
+  return resolve(storageRoot(), `${safe}.json`);
 }
 
 function loadState(alias: string): PersistedState {
