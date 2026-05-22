@@ -216,7 +216,10 @@ When a game (hangman, tictactoe, brainpet, …) is in a \`playing\` state:
           prompt: conversation,
           system: systemPrompt,
           maxTokens: 2048,
-          retries: 1,
+          // Inherit the facade default (2 retries): on "no tool call", it
+          // re-asks the model — context-stripped — to reissue its reply as a
+          // tool call. Small local models (gemma 4B) often ramble in prose to
+          // a meta question first but comply once the noise is removed.
         });
       } catch (err) {
         // ctx.llm.tools() throws when every model in the chain fails
