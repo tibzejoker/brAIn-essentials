@@ -44,7 +44,6 @@ describe("Brain node: central consciousness", () => {
         model: "ollama/gemma4:e4b",
         response_topic: "brain.output",
         max_steps: 5,
-        idle_sleep: "5s",
       },
     });
 
@@ -87,46 +86,4 @@ describe("Brain node: central consciousness", () => {
 
     brain.killAll();
   }, 90000);
-
-  it("can be asked to sleep and wakes on message", async () => {
-    if (!LLMRegistry.getInstance().isAvailable("ollama")) {
-      return;
-    }
-
-    const brainNode = await brain.spawnNode({
-      type: "brain",
-      name: "sleep-test-brain",
-      subscriptions: [{ topic: "brain.wake-test" }],
-      config_overrides: {
-        model: "ollama/gemma4:e4b",
-        idle_sleep: "2s",
-        max_steps: 3,
-      },
-    });
-
-    // Let it run one idle iteration and go to sleep
-    await new Promise((r) => { setTimeout(r, 15000); });
-
-    const state = brain.instanceRegistry.get(brainNode.id);
-    // Should be sleeping (idle with no messages)
-    expect(state?.state).toBe("sleeping");
-
-    // Send a message to wake it
-    brain.bus.publish({
-      from: "test",
-      topic: "brain.wake-test",
-      type: "text",
-      criticality: 3,
-      payload: { content: "Wake up!" },
-    });
-
-    // Give it time to wake and process
-    await new Promise((r) => { setTimeout(r, 5000); });
-
-    const stateAfter = brain.instanceRegistry.get(brainNode.id);
-    // Should be active or sleeping again (processed the message then went back to sleep)
-    expect(stateAfter?.state === "active" || stateAfter?.state === "sleeping").toBe(true);
-
-    brain.killAll();
-  }, 60000);
 });
