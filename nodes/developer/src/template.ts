@@ -59,13 +59,56 @@ CRITICAL: every entry in \`default_subscriptions\` MUST have BOTH \`topic\` and 
 Add \`"@brain/core": "workspace:*"\` to dependencies ONLY if you need a raw
 core helper (e.g. logger). The SDK types are usually enough.
 
-For LLM calls, use \`ctx.llm.*\` from \`@brain/sdk\` — do NOT import
-\`LLMRegistry\` / \`generateText\` directly. The facade handles model
-resolution (per-node override → global default → fallback chain),
-reasoning-text extraction, retry/failover and emits llm.usage events.
-Available methods:
-  await ctx.llm.text({ prompt, system?, model?, maxTokens? })
-  await ctx.llm.tool({ tool: { name, description, inputSchema }, prompt, system? })
+## The \`ctx\` API — what your handler can use (prefer these over reinventing)
+
+Everything is on the \`ctx\` argument. Import TYPES from \`@brain/sdk\`. NEVER
+import \`LLMRegistry\` / \`generateText\` directly — go through \`ctx.llm\`, which
+handles model resolution (per-node override → global default → fallback),
+reasoning extraction, retry/failover, and emits llm.usage events.
+
+**Messages — in & out**
+\`\`\`typescript
+ctx.messages                      // the batch that woke this handler
+ctx.respond("text", metadata?)    // reply to the user on the response topic
+ctx.publish("some.topic", { type: "text", criticality: 3, payload: { content: "…" } })
+ctx.readMessages({ topic })       // pull from this node's mailboxes on demand
+\`\`\`
+
+**LLM — model calls (failover + telemetry done for you)**
+\`\`\`typescript
+await ctx.llm.text({ prompt, system?, model?, maxTokens? })                  // plain text
+await ctx.llm.tool({ tool: { name, description, inputSchema }, prompt })     // ONE forced structured call → validated args
+await ctx.llm.tools({ tools: { foo: { description, inputSchema } }, prompt })// model picks one → { toolName, args }
+await ctx.llm.agent({ prompt, system?, cli? })                              // delegate to an agentic CLI (claude/codex/gemini); runs in this node's sandbox
+\`\`\`
+
+**Network awareness & delegation**
+\`\`\`typescript
+ctx.tools.list()                  // every PUBLIC tool on the network (local + peer machines), MCP shape
+ctx.tools.listForNode(nodeId)     // scope to one node
+await ctx.spawn({ type, name, config_overrides? })  // spawn another node
+ctx.kill(nodeId, reason?)         // stop one
+\`\`\`
+
+**State, storage, lifecycle**
+\`\`\`typescript
+ctx.state                         // plain object persisted across wakes (survives reboot) — your memory
+ctx.dataDir                       // a private directory scoped to THIS node — write files here
+ctx.node                          // this node's info, incl. config_overrides
+ctx.iteration / ctx.wasPreempted  // position in the wake budget
+ctx.signal                        // AbortSignal — pass to fetch / long ops / CLI runs so they die with the wake
+ctx.subscribe(topic, { description, inputSchema }) / ctx.unsubscribe(topic)
+ctx.log("info" | "debug" | "warn" | "error", "message", data?)  // structured log — NEVER console.log
+\`\`\`
+
+**Shared helpers from \`@brain/core\` (don't reimplement these)**
+\`\`\`typescript
+import { parseTolerantJson, repairTruncatedJson, CLIRegistry } from "@brain/core";
+parseTolerantJson(str)            // forgiving JSON parse (trailing commas, +15 → 15, single quotes…)
+repairTruncatedJson(str)          // best-effort repair of a cut-off JSON string (local-LLM output)
+// CLIRegistry.getInstance().run(cli, prompt, { cwd, signal }) is the low-level CLI launch —
+// prefer ctx.llm.agent() unless you need raw stdout / streaming via onLine.
+\`\`\`
 
 ### 3. tsconfig.json (COPY EXACTLY — wrong rootDir means dist/src/handler.js instead of dist/handler.js, framework rejects)
 \`\`\`json

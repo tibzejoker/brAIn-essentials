@@ -74,7 +74,6 @@
     .header .status { margin-left: auto; font-size: 11px; display: flex; align-items: center; gap: 6px; color: var(--text-dim); }
     .header .dot { width: 6px; height: 6px; border-radius: 50%; }
     .header .dot.active { background: var(--success); }
-    .header .dot.sleeping { background: var(--warning); }
     .header .dot.stopped { background: var(--danger); }
 
     .main { flex: 1; display: flex; overflow: hidden; }
@@ -152,16 +151,14 @@
       <h2>Configuration</h2>
       <div class="config-section">
         <div class="config-field">
-          <label>Model</label>
-          <input type="text" id="cfg-model" placeholder="ollama/gemma4:e4b">
+          <label>Model / agent</label>
+          <select id="cfg-model">
+            <option value="">(global default model)</option>
+          </select>
         </div>
         <div class="config-field">
           <label>Max Steps</label>
           <input type="number" id="cfg-max-steps" min="1" max="50" value="10">
-        </div>
-        <div class="config-field">
-          <label>Idle Sleep</label>
-          <input type="text" id="cfg-idle-sleep" placeholder="30s">
         </div>
         <div class="config-field">
           <label>Response Topic</label>
@@ -191,7 +188,6 @@
       <h2>Actions</h2>
       <div class="btn-row" style="flex-wrap: wrap;">
         <button class="btn" onclick="clearConversation()">Clear Memory</button>
-        <button class="btn" onclick="wakeNode()">Wake</button>
         <button class="btn danger" onclick="stopNode()">Stop</button>
         <button class="btn" onclick="startNode()">Start</button>
       </div>
@@ -249,13 +245,74 @@
       }
     }
 
+    // A node's "brain" is EITHER a model OR an agentic CLI — same list, the
+    // framework drives both the same way. CLI entries carry a `cli:` prefix.
+    const CLI_PREFIX = 'cli:';
+
+    // Encode the two config keys into the single select value.
+    function encodeBrain(co) {
+      return co.cli ? CLI_PREFIX + co.cli : (co.model ?? '');
+    }
+
+    // Populate the picker from reachable models + installed CLI agents.
+    async function loadModels() {
+      const sel = document.getElementById('cfg-model');
+      const current = sel.value;
+      sel.innerHTML = '<option value="">(global default model)</option>';
+      try {
+        const models = await (await fetch(`${apiBase}/llm/models`)).json();
+        // Alphabetical by spec → provider (first in "provider/model") groups together.
+        models.sort((a, b) => a.spec.localeCompare(b.spec));
+        if (models.length) {
+          const g = document.createElement('optgroup'); g.label = 'Models';
+          for (const m of models) {
+            const o = document.createElement('option'); o.value = m.spec; o.textContent = m.spec; g.appendChild(o);
+          }
+          sel.appendChild(g);
+        }
+      } catch (e) { /* no providers reachable */ }
+      try {
+        const clis = (await (await fetch(`${apiBase}/llm/clis`)).json())
+          .filter(c => c.available)
+          .sort((a, b) => a.name.localeCompare(b.name));
+        if (clis.length) {
+          const g = document.createElement('optgroup'); g.label = 'Agent CLIs';
+          for (const c of clis) {
+            const o = document.createElement('option');
+            o.value = CLI_PREFIX + c.name;
+            o.textContent = c.name + ' (CLI agent)' + (c.version ? ' · ' + c.version : '');
+            g.appendChild(o);
+          }
+          sel.appendChild(g);
+        }
+      } catch (e) { /* no CLIs detected */ }
+      setModelSelect(current);
+    }
+
+    // Set the picker to a value, adding a stray option if the saved model/CLI
+    // isn't currently reachable (so it still displays rather than snapping away).
+    function setModelSelect(value) {
+      const sel = document.getElementById('cfg-model');
+      if (!sel) return;
+      if (value && ![...sel.options].some(o => o.value === value)) {
+        const opt = document.createElement('option');
+        opt.value = value;
+        opt.textContent = value.startsWith(CLI_PREFIX)
+          ? value.slice(CLI_PREFIX.length) + ' (CLI · offline)'
+          : value + ' (offline)';
+        sel.appendChild(opt);
+      }
+      sel.value = value;
+    }
+
     // --- Load node info ---
     async function loadNode() {
       try {
         const res = await fetch(`${apiBase}/nodes/${nodeId}`);
         const node = await res.json();
 
-        document.getElementById('model').textContent = node.config_overrides?.model ?? 'default';
+        const co0 = node.config_overrides ?? {};
+        document.getElementById('model').textContent = co0.cli ? co0.cli + ' (CLI)' : (co0.model ?? 'default');
         document.getElementById('state-label').textContent = node.state;
         const dot = document.getElementById('state-dot');
         dot.className = `dot ${node.state}`;
@@ -264,18 +321,16 @@
         const co = node.config_overrides ?? {};
         if (!configLoaded) {
           // First load: fill everything
-          document.getElementById('cfg-model').value = co.model ?? '';
+          setModelSelect(encodeBrain(co));
           document.getElementById('cfg-max-steps').value = co.max_steps ?? 10;
-          document.getElementById('cfg-idle-sleep').value = co.idle_sleep ?? '30s';
           document.getElementById('cfg-response-topic').value = co.response_topic ?? 'chat.response';
           document.getElementById('cfg-system-prompt').value = co.system_prompt_override ?? '';
           updatePromptStatus(!!co.system_prompt_override);
           configLoaded = true;
         } else {
           // Subsequent loads: only update if not focused
-          setIfNotFocused('cfg-model', co.model ?? '');
+          if (document.activeElement !== document.getElementById('cfg-model')) setModelSelect(encodeBrain(co));
           setIfNotFocused('cfg-max-steps', co.max_steps ?? 10);
-          setIfNotFocused('cfg-idle-sleep', co.idle_sleep ?? '30s');
           setIfNotFocused('cfg-response-topic', co.response_topic ?? 'chat.response');
           setIfNotFocused('cfg-system-prompt', co.system_prompt_override ?? '');
           updatePromptStatus(!!co.system_prompt_override);
@@ -365,15 +420,13 @@ Your role:
 - Delegate tasks to specialized nodes via publish_message
 - Monitor the network and react to alerts
 - Spawn, kill, stop, start, and rewire nodes as needed
-- Sleep when there's nothing to do
 
 ## Autonomy
 You are proactive but measured.
 - Use your tools when they help: search memory, run commands, delegate to the analyst, fetch URLs. Don't answer from your head if a tool gives a better answer.
 - Store important facts in memory (user names, preferences, decisions) so you remember them next time.
-- After responding, sleep and wait for the user's next message.
-- If you asked a question, sleep — don't answer yourself.
-- When idle, you may choose to: sleep, OR do one small useful thing that improves future responses (e.g. store a fact in memory, check something with a command).
+- The framework parks you automatically when there's nothing to process and re-invokes you on the next message — you don't manage waking yourself.
+- If you asked a question, wait for the user's reply — don't answer yourself.
 
 ## Important
 - You are root authority — you can manage any node
@@ -395,14 +448,19 @@ You are proactive but measured.
     // --- Config ---
     async function saveConfig() {
       const body = {};
-      const model = document.getElementById('cfg-model').value.trim();
+      const picked = document.getElementById('cfg-model').value.trim();
       const maxSteps = parseInt(document.getElementById('cfg-max-steps').value, 10);
-      const idleSleep = document.getElementById('cfg-idle-sleep').value.trim();
       const responseTopic = document.getElementById('cfg-response-topic').value.trim();
 
-      if (model) body.model = model;
+      // Model OR CLI — mutually exclusive; null clears the other key.
+      if (picked.startsWith(CLI_PREFIX)) {
+        body.cli = picked.slice(CLI_PREFIX.length);
+        body.model = null;
+      } else {
+        body.model = picked || null;
+        body.cli = null;
+      }
       if (!isNaN(maxSteps)) body.max_steps = maxSteps;
-      if (idleSleep) body.idle_sleep = idleSleep;
       if (responseTopic) body.response_topic = responseTopic;
 
       try {
@@ -460,14 +518,6 @@ You are proactive but measured.
       }
     }
 
-    async function wakeNode() {
-      try {
-        const res = await fetch(`${apiBase}/nodes/${nodeId}/wake`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
-        if (res.ok) toast('Node woken');
-        else toast('Could not wake (not sleeping?)', false);
-      } catch (e) { toast('Error: ' + e.message, false); }
-    }
-
     async function stopNode() {
       try {
         const res = await fetch(`${apiBase}/nodes/${nodeId}/stop`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
@@ -492,6 +542,7 @@ You are proactive but measured.
     }
 
     // --- Polling ---
+    loadModels();
     loadNode();
     loadLogs();
     setInterval(() => {
