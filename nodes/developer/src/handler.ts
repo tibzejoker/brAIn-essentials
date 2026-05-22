@@ -1,4 +1,4 @@
-import { spawn, spawnSync } from "child_process";
+import { spawnSync } from "child_process";
 import * as fs from "fs";
 import * as path from "path";
 import type { NodeContext, NodeHandler, TextPayload, Message, NodeInfo } from "@brain/sdk";
@@ -197,61 +197,6 @@ export function pickCli(overrides: Record<string, unknown>, msgMeta: Record<stri
   const fromMsg = msgMeta && typeof msgMeta.cli === "string" ? (msgMeta.cli as string) : undefined;
   if (fromMsg) return fromMsg;
   return (overrides.cli as string | undefined) ?? "claude";
-}
-
-/**
- * Build CLI args for the supported code-authoring CLIs. All three accept
- * a prompt on stdin via `-p -`. Claude additionally takes turn caps and
- * the auto-permission bypass; codex/gemini reject those flags.
- */
-export function buildCliArgs(cli: string): string[] {
-  const stdinPrompt = ["-p", "-"];
-  if (cli === "claude") {
-    return [...stdinPrompt, "--max-turns", "40", "--dangerously-skip-permissions"];
-  }
-  // codex/gemini and any unknown CLI: stick to the portable subset.
-  return stdinPrompt;
-}
-
-function runCli(
-  cli: string,
-  prompt: string,
-  cwd: string,
-  timeoutMs: number,
-  onLine: (line: string) => void,
-  signal: AbortSignal,
-): Promise<{ stdout: string; exitCode: number }> {
-  return new Promise((resolve) => {
-    // Direct spawn (no `sh -c` wrapper) so this works on Windows where
-    // sh isn't in PATH. shell:true on win32 lets `.cmd` shims resolve.
-    // Prompt goes via stdin — no temp file needed, no leak risk.
-    const proc = spawn(cli, buildCliArgs(cli), {
-      cwd,
-      timeout: timeoutMs,
-      signal,
-      stdio: ["pipe", "pipe", "pipe"],
-      shell: process.platform === "win32",
-    });
-
-    proc.stdin.on("error", () => { /* CLI may close stdin early — ignore EPIPE */ });
-    proc.stdin.write(prompt);
-    proc.stdin.end();
-
-    let stdout = "";
-    proc.stdout.on("data", (chunk: Buffer) => {
-      const text = chunk.toString();
-      stdout += text;
-      for (const line of text.split("\n").filter(Boolean)) onLine(line);
-    });
-    proc.stderr.on("data", (chunk: Buffer) => {
-      for (const line of chunk.toString().split("\n").filter(Boolean)) onLine(`[stderr] ${line}`);
-    });
-    proc.on("close", (code) => resolve({ stdout, exitCode: code ?? 1 }));
-    proc.on("error", (err) => {
-      onLine(`[error] ${err.message}`);
-      resolve({ stdout, exitCode: 1 });
-    });
-  });
 }
 
 function buildInitialPrompt(workspacePath: string, request: string): string {
@@ -476,10 +421,20 @@ async function runWorkspaceJob(
   const startTs = Date.now();
   let result: { stdout: string; exitCode: number } | null = null;
   try {
-    result = await runCli(ws.cli, prompt, path.dirname(ws.path), config.timeout_ms, (line) => {
-      ctx.log("debug", `[${ws.slug}] ${line.slice(0, 200)}`);
-      progress.push(line);
-    }, ctx.signal);
+    // Launch via the framework's shared CLI runner (CLIRegistry.run) — the
+    // spawn/stdin/args mechanics live there now, deduped across the network.
+    // The node still owns the *scope*: its workspace as cwd and its wake's
+    // ctx.signal, so the CLI process dies with this node's iteration.
+    const res = await CLIRegistry.getInstance().run(ws.cli, prompt, {
+      cwd: path.dirname(ws.path),
+      timeoutMs: config.timeout_ms,
+      signal: ctx.signal,
+      onLine: (line) => {
+        ctx.log("debug", `[${ws.slug}] ${line.slice(0, 200)}`);
+        progress.push(line);
+      },
+    });
+    result = { stdout: res.raw, exitCode: res.exitCode };
     ctx.log("info", `[${ws.slug}] CLI exit ${result.exitCode}`);
     progress.push(`▶ CLI exit ${result.exitCode}`);
   } finally {
