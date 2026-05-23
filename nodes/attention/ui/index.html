@@ -126,12 +126,12 @@
   </main>
 
   <script>
-    // The node UI is served by the brAIn API at /nodes/<id>/ui/. We
+    // The node UI is served by the brAIn API at /node/<id>/ui/. We
     // derive the id from the URL so the UI works regardless of the
     // instance id the runtime assigned.
-    const match = window.location.pathname.match(/\/nodes\/([^/]+)\//);
+    const match = window.location.pathname.match(/\/node\/([^/]+)\//);
     const NODE_ID = match ? match[1] : "attention";
-    const MESSAGES_URL = `/nodes/${NODE_ID}/ui/messages`;
+    const MESSAGES_URL = `/node/${NODE_ID}/messages`;
 
     const feed = document.getElementById("attn-feed");
     const status = document.getElementById("status");

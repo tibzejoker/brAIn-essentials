@@ -28,12 +28,23 @@ function formatMessage(msg: { from: string; topic: string; criticality: number; 
 export const handler: NodeHandler = async (ctx) => {
   const config = getConfig(ctx.node.config_overrides ?? {} as Record<string, unknown>);
 
-  // Handle clear state request from UI
-  if (ctx.node.config_overrides?._clear_state) {
+  // Cross-channel reset signal — any surface publishing chat.reset (the web
+  // chat's New-chat button, this node's own Clear-conversation action, a
+  // future /reset slash command from a bridge) drops the brain's short-term
+  // conversation context. We process it before the LLM call so the reset
+  // turn itself doesn't trigger a gratuitous completion. Strip the reset
+  // events out of the visible message list so they don't pollute the
+  // "messages summary" prompt.
+  const resetIncoming = ctx.messages.some((m) => m.topic === "chat.reset");
+  if (resetIncoming) {
     ctx.state.conversation = [];
     ctx.state.conversation_count = 0;
-    delete ctx.node.config_overrides._clear_state;
-    ctx.log("info", "Conversation state cleared via UI");
+    ctx.log("info", "Conversation state cleared via chat.reset bus event");
+    // Drop the reset message itself. If it was the only thing in the
+    // batch we have nothing to think about — return early without paying
+    // for an LLM call.
+    ctx.messages = ctx.messages.filter((m) => m.topic !== "chat.reset");
+    if (ctx.messages.length === 0) return;
   }
 
   // The brain is the sole NLU gateway — every human input (whether

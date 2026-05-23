@@ -386,7 +386,7 @@
     async function loadConversation() {
       if (currentTab !== 'conversation') return;
       try {
-        const res = await fetch(`${apiBase}/nodes/${nodeId}/ui/messages`);
+        const res = await fetch(`${apiBase}/node/${nodeId}/messages`);
         const messages = await res.json();
 
         const container = document.getElementById('conv-container');
@@ -505,14 +505,18 @@ You are proactive but measured.
 
     // --- Actions ---
     async function clearConversation() {
-      // Reset the brain's conversation state by sending a config override
+      // Publish chat.reset on the bus — the unified "forget the current
+      // conversation" signal. The brain wipes its own state via the same
+      // path the web chat's New-chat button uses, and any other surface
+      // subscribed to chat.reset (web chat UI, future bridges) clears
+      // alongside. One control event, every canal in sync.
       try {
-        await fetch(`${apiBase}/nodes/${nodeId}/config`, {
-          method: 'PATCH',
+        await fetch(`${apiBase}/node/${nodeId}/chat.reset`, {
+          method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ _clear_state: true }),
+          body: JSON.stringify(''),
         });
-        toast('Memory clear requested (takes effect next iteration)');
+        toast('Conversation reset (propagated to every chat surface)');
       } catch (e) {
         toast('Error: ' + e.message, false);
       }

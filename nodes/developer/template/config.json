@@ -28,6 +28,6 @@
     "chat.response",
     "TEMPLATE_PUBLIC_TOPIC.event"
   ],
-  "has_ui": false,
+  "has_ui": true,
   "supports_transport": ["process"]
 }

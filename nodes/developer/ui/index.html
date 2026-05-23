@@ -307,7 +307,7 @@
   </main>
 
   <script>
-    const nodeId = window.location.pathname.split('/nodes/')[1]?.split('/ui')[0];
+    const nodeId = window.location.pathname.split('/node/')[1]?.split('/ui')[0];
     const apiBase = window.location.origin;
 
     const els = {
@@ -359,18 +359,11 @@
     }
 
     // ── outgoing: drive our own subscriptions via /send with system origin ────
-    async function send(topic, body, criticality = 4) {
+    async function send(topic, body) {
       try {
-        const payload = {
-          topic,
-          content: typeof body === 'string' ? body : JSON.stringify(body),
-          criticality,
-          from: 'system.dev-ui',
-          metadata: typeof body === 'object' ? body : undefined,
-        };
-        const res = await fetch(`${apiBase}/nodes/${nodeId}/ui/send`, {
+        const res = await fetch(`${apiBase}/node/${nodeId}/${topic}`, {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload),
+          body: JSON.stringify(body),
         });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
       } catch (e) {
@@ -381,7 +374,7 @@
     // ── polling ───────────────────────────────────────────────────────────────
     async function pollMessages() {
       try {
-        const res = await fetch(`${apiBase}/nodes/${nodeId}/ui/messages`);
+        const res = await fetch(`${apiBase}/node/${nodeId}/messages`);
         if (!res.ok) { els.status.textContent = 'node not running'; return; }
         const messages = await res.json();
         els.status.textContent = `${messages.length} bus events tracked`;
