@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>TEMPLATE_NAME</title>
+  <style>
+    /* Minimal dark theme. Match the host dashboard's tokens — every other
+       node UI in storeprojects uses the same palette so the iframe blends in. */
+    :root {
+      --bg: #0A0A0A; --surface: #111; --elevated: #1A1A1A;
+      --border: #262626; --border-strong: #333;
+      --text: #EDEDED; --text-dim: #A1A1A1;
+      --accent: #EDEDED; --accent-fg: #0A0A0A;
+      --radius: 8px; --radius-sm: 4px;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.4 system-ui, -apple-system, sans-serif; height: 100vh; display: flex; flex-direction: column; }
+    header { padding: 10px 16px; border-bottom: 1px solid var(--border); background: var(--surface); display: flex; gap: 8px; align-items: center; }
+    header h1 { font-size: 14px; font-weight: 600; margin: 0; }
+    .badge { font-size: 10px; padding: 2px 6px; border-radius: var(--radius-sm); background: var(--elevated); color: var(--text-dim); border: 1px solid var(--border); }
+    main { flex: 1; padding: 16px; overflow: auto; }
+    .log { font-family: ui-monospace, monospace; font-size: 12px; color: var(--text-dim); white-space: pre-wrap; }
+    .composer { padding: 12px 16px; padding-bottom: max(12px, env(safe-area-inset-bottom)); border-top: 1px solid var(--border); background: var(--surface); }
+    .composer .pill { position: relative; }
+    /* The 16px font-size is load-bearing on iOS Safari: any value < 16px
+       triggers an auto-zoom on focus. Don't shrink it for "design". */
+    .composer input { width: 100%; padding: 12px 52px 12px 16px; border-radius: 999px; border: 1px solid var(--border); background: var(--bg); color: var(--text); font-size: 16px; outline: none; }
+    .composer input:focus { border-color: var(--border-strong); }
+    .composer button { position: absolute; right: 4px; top: 50%; transform: translateY(-50%); width: 36px; height: 36px; border-radius: 50%; border: 1px solid var(--border-strong); background: var(--accent); color: var(--accent-fg); font-weight: 600; cursor: pointer; }
+    .composer button:disabled { opacity: 0.4; cursor: default; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>TEMPLATE_NAME</h1>
+    <span class="badge" id="status">connecting…</span>
+  </header>
+  <main>
+    <div class="log" id="log"></div>
+  </main>
+  <div class="composer">
+    <div class="pill">
+      <input id="input" type="text" placeholder="Type a command…" autocomplete="off" enterkeyhint="send" />
+      <button id="send" type="button" aria-label="Send">↑</button>
+    </div>
+  </div>
+
+  <script>
+    // ============================================================================
+    // brAIn node UI conventions — READ THIS BEFORE EDITING
+    // ============================================================================
+    //
+    // Every UI for a node is served by the brAIn framework at
+    //   /node/<nodeId>/ui/...
+    // and talks to its backend ONLY through the framework, never directly to
+    // the framework's API endpoints. The framework proxies every call over
+    // NATS to the node's owner hub, so this UI works identically whether the
+    // node is local or on a peer machine — there is one URL shape, period.
+    //
+    // Two endpoints exposed for any node:
+    //
+    //   POST /node/<nodeId>/<topic>        body = JSON payload (any JSON value)
+    //     → publishes a bus message with that topic, content = body.
+    //       The node's handler receives it on the next iteration. Returns
+    //       { message_id } so the UI can correlate.
+    //
+    //   GET  /node/<nodeId>/messages       → recent mailbox + sent history
+    //                                        (last 50 messages, includes both
+    //                                        incoming subscriptions AND this
+    //                                        node's own publishes).
+    //
+    // DO NOT use legacy paths like /nodes/<id>/ui/send — they no longer exist.
+    // DO NOT hardcode an apiBase; always use window.location.origin.
+    // DO NOT bypass the framework by calling another node's HTTP directly.
+    //
+    // Extract the node id from the URL — every iframe loads at
+    //   /node/<id>/ui/ — so split on '/node/' then on '/ui'.
+    // ============================================================================
+
+    const nodeId = window.location.pathname.split('/node/')[1]?.split('/ui')[0];
+    const apiBase = window.location.origin;
+
+    const $log = document.getElementById('log');
+    const $status = document.getElementById('status');
+    const $input = document.getElementById('input');
+    const $send = document.getElementById('send');
+
+    // Polled mailbox state. Dedup by message id so we don't redraw every tick.
+    const seen = new Set();
+
+    async function pollMessages() {
+      try {
+        const res = await fetch(`${apiBase}/node/${nodeId}/messages`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const messages = await res.json();
+        for (const m of messages) {
+          if (seen.has(m.id)) continue;
+          seen.add(m.id);
+          const line = document.createElement('div');
+          const content = (m.payload && m.payload.content) || '';
+          line.textContent = `[${m.topic}] ${content}`;
+          $log.appendChild(line);
+        }
+        $log.scrollTop = $log.scrollHeight;
+        $status.textContent = `${messages.length} msgs`;
+      } catch (e) {
+        $status.textContent = 'disconnected';
+      }
+    }
+
+    async function sendInput() {
+      const text = $input.value.trim();
+      if (!text) return;
+      $send.disabled = true;
+      try {
+        // Publish on the node's PUBLIC input topic. Change 'TEMPLATE_PUBLIC_TOPIC'
+        // to match the topic the handler actually subscribes to in config.json.
+        // The body is forwarded verbatim as message.payload.content — a string
+        // here, but it could be any JSON value (object, number, array, …).
+        await fetch(`${apiBase}/node/${nodeId}/TEMPLATE_PUBLIC_TOPIC`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(text),
+        });
+        $input.value = '';
+      } catch (e) {
+        $status.textContent = `error: ${e.message}`;
+      }
+      $send.disabled = false;
+      $input.focus();
+    }
+
+    $send.addEventListener('click', sendInput);
+    $input.addEventListener('keydown', (e) => { if (e.key === 'Enter') sendInput(); });
+
+    // 1 s poll — adjust upward (3-5 s) for non-conversational UIs that just
+    // need an occasional refresh. The framework's NATS proxy is cheap, but
+    // every poll is still a round-trip through the bus.
+    pollMessages();
+    setInterval(pollMessages, 1000);
+  </script>
+</body>
+</html>

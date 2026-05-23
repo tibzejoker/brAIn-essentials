@@ -19,6 +19,8 @@ validation feedback.
     handler.ts
   tests/
     handler.test.ts   (MUST exist — at least one passing test)
+  ui/                 (OPTIONAL — only if config.has_ui === true)
+    index.html        (served by the framework at /node/<id>/ui/)
 \`\`\`
 
 ### 1. config.json
@@ -242,6 +244,73 @@ If the request mentions "chat" / "réponds dans le chat" / "answer the user", th
 correct publish topic is \`chat.response.<your-node-name>\`. The chat node's
 subscription is \`chat.response.*\` (verify in \`brAIn-ui/nodes/chat/config.json\`)
 — a bare \`chat.response\` will NOT reach the UI.
+
+## Node UI conventions (only if \`has_ui: true\`)
+
+A node's UI is a single static \`ui/index.html\` (you can ship more assets next
+to it — JS modules, CSS, fonts — they're all served verbatim). The brAIn
+framework serves it under \`/node/<nodeId>/ui/...\` and proxies every API call
+over NATS, so the UI works identically whether the node runs locally or on a
+peer machine. ONE URL shape for everything.
+
+### The TWO endpoints your UI is allowed to call
+
+The UI is sandboxed to TWO framework-exposed endpoints addressed at its own
+node id — never call anything else, never call another node's HTTP directly,
+never hardcode \`apiBase\`. Always derive both:
+
+\`\`\`html
+<script>
+  // The iframe lives at /node/<id>/ui/ — split it.
+  const nodeId  = window.location.pathname.split('/node/')[1]?.split('/ui')[0];
+  const apiBase = window.location.origin;
+</script>
+\`\`\`
+
+Then:
+
+\`\`\`typescript
+// 1. Publish a bus message on a topic this node subscribes to.
+//    body = ANY JSON value (string, number, object, array). It becomes
+//    message.payload.content verbatim. Use a STRING for free-form text,
+//    an OBJECT when you need structured args (e.g. {action, value}).
+fetch(\`\${apiBase}/node/\${nodeId}/<topic>\`, {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(payload),
+});
+// → returns { message_id: "<uuid>" } you can correlate later.
+
+// 2. Poll the node's mailbox + recent sent history (last 50 msgs).
+//    Includes BOTH messages this node received (matching its subscriptions)
+//    AND messages it published. Filter by topic / from on the client.
+const res = await fetch(\`\${apiBase}/node/\${nodeId}/messages\`);
+const messages = await res.json();
+// each message: { id, from, topic, type, criticality, payload:{content}, metadata, timestamp }
+\`\`\`
+
+### DO NOT
+
+- DO NOT call \`/nodes/<id>/ui/send\` — that legacy route was deleted in 2026-05.
+- DO NOT call \`/nodes/<id>/...\` for anything UI-side; use \`/node/<id>/...\` (singular).
+- DO NOT hit another node's UI base from this one — talk to your own node and let
+  the bus do the routing. If you need work done elsewhere, publish a topic some
+  other node subscribes to.
+- DO NOT hardcode a port / host. \`window.location.origin\` is the truth.
+
+### UI best practices (cheap wins)
+
+- **\`<meta name="viewport" content="width=device-width, initial-scale=1.0">\`** —
+  needed for any phone-readable layout.
+- **Input \`font-size: 16px\` minimum** — iOS Safari auto-zooms on focus below 16px.
+- **Composer pattern**: input + send button as a single pill, button inside the
+  input (absolute, \`right: 4px\`), so a small viewport can't push the button off
+  screen. See \`storeprojects/brAIn-essentials/nodes/developer/template/ui/index.html\`
+  for the canonical layout.
+- **Bottom padding \`max(12px, env(safe-area-inset-bottom))\`** so iPhone notch
+  doesn't eat the composer.
+- **Poll interval**: 1 s for conversational UIs, 3-5 s for status dashboards.
+  Every poll is a real NATS round-trip; don't tighten below 500 ms.
 
 ## Other conventions
 
