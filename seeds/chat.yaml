@@ -15,7 +15,6 @@ nodes:
     position: { x: 100, y: 250 }
     subscriptions:
       - topic: "chat.response"
-      - topic: "brain.output"
 
   # === Central brain — receives chat messages and responds ===
   - type: brain

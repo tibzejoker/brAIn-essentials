@@ -14,7 +14,6 @@ nodes:
     position: { x: 50, y: 350 }
     subscriptions:
       - topic: "chat.response"
-      - topic: "brain.output"
       - topic: "report.*"
       - topic: "dev.result"
       - topic: "cmd.output"
