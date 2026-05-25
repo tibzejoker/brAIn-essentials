@@ -8,7 +8,11 @@
     "inputs": {
       "user_message": {
         "description": "Free-form text from the user. Anything published on a topic bound here gets the brain's attention.",
-        "inputSchema": { "type": "string" }
+        "inputSchema": {
+          "type": "object",
+          "properties": { "content": { "type": "string" } },
+          "required": ["content"]
+        }
       },
       "addressed_message": {
         "description": "Anything addressed to the central consciousness — questions, instructions, status updates from other nodes.",
@@ -34,8 +38,8 @@
       }
     },
     "outputs": {
-      "user_response": {
-        "description": "Reply to the user. Emitted via ctx.respond / emit_port('user_response', ...)."
+      "brain_response": {
+        "description": "Reply from the brain. Topic-bound to chat.response by default but the name is generic — the same port lets the brain talk to any sink (TTS, log, web)."
       }
     }
   },
@@ -47,7 +51,7 @@
       "reset_signal": ["chat.reset"]
     },
     "outputs": {
-      "user_response": ["chat.response"]
+      "brain_response": ["chat.response"]
     }
   },
   "default_subscriptions": [],
