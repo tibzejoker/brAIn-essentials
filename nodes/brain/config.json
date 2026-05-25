@@ -31,7 +31,7 @@
   },
   "default_port_bindings": {
     "inputs": {
-      "brain_input": ["chat.input", "brain.*", "alerts.*"],
+      "brain_input": ["chat.input", "brain.input", "alerts.*"],
       "reset_signal": ["chat.reset"]
     },
     "outputs": {
