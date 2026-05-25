@@ -4,11 +4,53 @@
   "tags": ["consciousness", "orchestrator", "llm", "root"],
   "default_authority": 2,
   "default_priority": 10,
-  "default_subscriptions": [
-    { "topic": "brain.*", "description": "Anything addressed to the central consciousness — questions, instructions, status updates, etc.", "internal": true },
-    { "topic": "alerts.*", "description": "High-priority alerts from any node that need the brain's attention or intervention.", "internal": true },
-    { "topic": "chat.reset", "description": "Cross-channel signal that the user wants to start a fresh conversation. The brain wipes its short-term context (conversation buffer + iteration count) so the next turn isn't polluted by stale memory.", "internal": true }
-  ],
+  "ports": {
+    "inputs": {
+      "user_message": {
+        "description": "Free-form text from the user. Anything published on a topic bound here gets the brain's attention.",
+        "inputSchema": { "type": "string" }
+      },
+      "addressed_message": {
+        "description": "Anything addressed to the central consciousness — questions, instructions, status updates from other nodes.",
+        "inputSchema": { "type": "object" }
+      },
+      "alert": {
+        "description": "High-priority alert from any node that needs the brain's attention or intervention.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "title": { "type": "string" },
+            "description": { "type": "string" },
+            "source_context": { "type": "string" },
+            "suggested_action": { "type": "string" },
+            "requires_ack": { "type": "boolean" }
+          },
+          "required": ["title", "description"]
+        }
+      },
+      "reset_signal": {
+        "description": "Wipe the brain's short-term context (conversation buffer + iteration count) so the next turn starts fresh. No payload required.",
+        "inputSchema": { "type": "object" }
+      }
+    },
+    "outputs": {
+      "user_response": {
+        "description": "Reply to the user. Emitted via ctx.respond / emit_port('user_response', ...)."
+      }
+    }
+  },
+  "default_port_bindings": {
+    "inputs": {
+      "user_message": ["chat.input"],
+      "addressed_message": ["brain.*"],
+      "alert": ["alerts.*"],
+      "reset_signal": ["chat.reset"]
+    },
+    "outputs": {
+      "user_response": ["chat.response"]
+    }
+  },
+  "default_subscriptions": [],
   "default_publishes": ["chat.response"],
   "has_ui": true,
   "supports_transport": ["process"]
