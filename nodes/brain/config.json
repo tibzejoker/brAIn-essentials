@@ -6,30 +6,16 @@
   "default_priority": 10,
   "ports": {
     "inputs": {
-      "user_message": {
-        "description": "Free-form text from the user. Anything published on a topic bound here gets the brain's attention.",
-        "inputSchema": {
-          "type": "object",
-          "properties": { "content": { "type": "string" } },
-          "required": ["content"]
-        }
-      },
-      "addressed_message": {
-        "description": "Anything addressed to the central consciousness — questions, instructions, status updates from other nodes.",
-        "inputSchema": { "type": "object" }
-      },
-      "alert": {
-        "description": "High-priority alert from any node that needs the brain's attention or intervention.",
+      "brain_input": {
+        "description": "Anything the brain should think about — human messages from the chat, peer-node questions/status, or alerts from any node. The LLM reads the batch and decides what to do.",
         "inputSchema": {
           "type": "object",
           "properties": {
-            "title": { "type": "string" },
-            "description": { "type": "string" },
-            "source_context": { "type": "string" },
-            "suggested_action": { "type": "string" },
-            "requires_ack": { "type": "boolean" }
-          },
-          "required": ["title", "description"]
+            "content": { "type": "string", "description": "The message body (free text)." },
+            "title": { "type": "string", "description": "Short headline when escalating as an alert." },
+            "criticality": { "type": "number", "description": "Optional priority hint (0–9). Higher = more urgent." },
+            "source_context": { "type": "string", "description": "Where this came from, when not obvious from the topic." }
+          }
         }
       },
       "reset_signal": {
@@ -45,9 +31,7 @@
   },
   "default_port_bindings": {
     "inputs": {
-      "user_message": ["chat.input"],
-      "addressed_message": ["brain.*"],
-      "alert": ["alerts.*"],
+      "brain_input": ["chat.input", "brain.*", "alerts.*"],
       "reset_signal": ["chat.reset"]
     },
     "outputs": {
