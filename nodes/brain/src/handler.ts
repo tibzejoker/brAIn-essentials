@@ -240,16 +240,18 @@ When a game (hangman, tictactoe, brainpet, …) is in a \`playing\` state:
       }
 
       ctx.log("info", `Dispatch tool: ${picked.toolName}`);
-      // Persist a stringified record of the choice so the next iteration
-      // sees what the brain just did.
-      conversation.push({
-        role: "assistant",
-        content: JSON.stringify({ tool: picked.toolName, args: picked.args }),
-      });
-
+      // Persist the brain's turn so the next iteration sees what it just
+      // did — but as PLAIN TEXT, never JSON. Storing past tool-calls as
+      // `JSON.stringify({tool, args})` in assistant.content teaches small
+      // models (gemma 4B in particular) to imitate that format in their
+      // OWN output: instead of emitting a real tool_call they write the
+      // JSON as content, which ai-sdk then rejects as "no tool call".
+      // Plain text leaves the structured-output path uncontaminated and
+      // still gives the LLM a useful trace of its prior decisions.
       if (picked.toolName === "respond") {
         const content = String(picked.args.content ?? "").trim();
         if (content.length > 0) {
+          conversation.push({ role: "assistant", content });
           ctx.respond(content);
         }
         return;
@@ -257,10 +259,21 @@ When a game (hangman, tictactoe, brainpet, …) is in a \`playing\` state:
 
       if (picked.toolName === "stop") {
         // Brain decided no further action — exit the wake. The framework
-        // re-invokes us on the next subscribed message.
+        // re-invokes us on the next subscribed message. No history entry:
+        // the next wake sees the next user message and decides fresh.
         ctx.log("info", "Brain chose stop — ending wake");
         return;
       }
+
+      // Delegation to a network tool — leave a short textual marker so
+      // the brain remembers it acted (and which channel it favours) but
+      // without the JSON that would prime prose-imitation. The actual
+      // args go to the bus on `ctx.publish` below; the model doesn't
+      // need to re-see them here.
+      conversation.push({
+        role: "assistant",
+        content: `(I delegated to ${picked.toolName}.)`,
+      });
 
       // Network tool: look it up in the live catalog.
       const descriptor = networkToolByName.get(picked.toolName);
