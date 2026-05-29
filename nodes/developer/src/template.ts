@@ -23,7 +23,7 @@ validation feedback.
     index.html        (served by the framework at /node/<id>/ui/)
 \`\`\`
 
-### 1. config.json
+### 1. config.json — MANDATORY 2-layer wiring (\`ports\` + \`default_port_bindings\`)
 \`\`\`json
 {
   "name": "my-unique-name",
@@ -31,15 +31,33 @@ validation feedback.
   "tags": ["relevant", "tags"],
   "default_authority": 0,
   "default_priority": 1,
-  "default_subscriptions": [
-    { "topic": "some.input.topic", "description": "Why this node listens here." }
-  ],
-  "default_publishes": ["some.output.topic"],
+  "ports": {
+    "inputs": {
+      "command": {
+        "description": "Why this node listens — surfaced as an MCP tool the brain can call.",
+        "inputSchema": { "type": "object", "properties": { "x": { "type": "string" } } }
+      }
+    },
+    "outputs": {
+      "reply": { "description": "What this node emits and why." }
+    }
+  },
+  "default_port_bindings": {
+    "inputs": { "command": ["some.input.topic"] },
+    "outputs": { "reply": ["some.output.topic"] }
+  },
   "supports_transport": ["process"]
 }
 \`\`\`
 
-CRITICAL: every entry in \`default_subscriptions\` MUST have BOTH \`topic\` and \`description\` (description is a NOT NULL DB column — the framework's auto-spawn will fail with "NOT NULL constraint failed: subscriptions.description" if you omit it).
+This is the ONLY wiring model — there is no \`default_subscriptions\` / \`default_publishes\` and no auto-derivation. A node WITHOUT explicit \`ports\` + \`default_port_bindings\` is REJECTED at registration.
+
+Rules:
+- A **port** is a stable, named handle (e.g. \`command\`, \`reply\`) — name it for its ROLE, not its topic, so you can rewire the topic later without breaking the contract.
+- Every **input port** MUST have both a \`description\` and an \`inputSchema\` (JSON Schema) — it becomes a callable MCP tool. Output ports need only a \`description\`.
+- \`default_port_bindings\` maps each port to the bus topic(s) it listens on / emits to. One port may bind several topics (fan-in); a port may bind zero topics if you intend to wire it live.
+- \`default_port_bindings\` keys MUST match declared ports (a stray key is a typo and fails registration).
+- A node with fully dynamic wiring (rare) declares \`"ports": {}\` + \`"default_port_bindings": {}\` explicitly — the empty objects are the opt-in.
 
 ### 2. package.json
 \`\`\`json

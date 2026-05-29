@@ -4,30 +4,44 @@
   "tags": ["TEMPLATE_TAG"],
   "default_authority": 0,
   "default_priority": 1,
-  "default_subscriptions": [
-    {
-      "topic": "TEMPLATE_PUBLIC_TOPIC",
-      "description": "Public command this node accepts from any sender. Must have an inputSchema so the framework surfaces it as a tool the brain can call.",
-      "inputSchema": {
-        "type": "object",
-        "required": ["action"],
-        "additionalProperties": false,
-        "properties": {
-          "action": { "type": "string", "description": "What to do — e.g. 'start', 'query', 'reset'." },
-          "value":  { "type": "string", "description": "Free-form payload for the action." }
+  "ports": {
+    "inputs": {
+      "command": {
+        "description": "Public command this node accepts from any sender. Every input port is an MCP tool the brain can call — keep the inputSchema tight.",
+        "inputSchema": {
+          "type": "object",
+          "required": ["action"],
+          "additionalProperties": false,
+          "properties": {
+            "action": { "type": "string", "description": "What to do — e.g. 'start', 'query', 'reset'." },
+            "value":  { "type": "string", "description": "Free-form payload for the action." }
+          }
         }
+      },
+      "tick": {
+        "description": "Optional heartbeat from the clock node. Remove this port (and its binding) if you don't need a periodic wake.",
+        "inputSchema": { "type": "object" }
       }
     },
-    {
-      "topic": "time.tick",
-      "description": "Optional heartbeat from the clock node. Remove if you don't need a periodic wake.",
-      "internal": true
+    "outputs": {
+      "reply": {
+        "description": "Human-facing reply, wired to chat.response by default (the chat UI + bridges listen there)."
+      },
+      "event": {
+        "description": "Structured event this node emits for downstream nodes to react to."
+      }
     }
-  ],
-  "default_publishes": [
-    "chat.response",
-    "TEMPLATE_PUBLIC_TOPIC.event"
-  ],
+  },
+  "default_port_bindings": {
+    "inputs": {
+      "command": ["TEMPLATE_PUBLIC_TOPIC"],
+      "tick": ["time.tick"]
+    },
+    "outputs": {
+      "reply": ["chat.response"],
+      "event": ["TEMPLATE_PUBLIC_TOPIC.event"]
+    }
+  },
   "has_ui": true,
   "supports_transport": ["process"]
 }

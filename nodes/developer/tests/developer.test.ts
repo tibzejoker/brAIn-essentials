@@ -5,7 +5,11 @@ import * as path from "path";
 import * as fs from "fs";
 import { allStoreprojectNodeDirs } from "./_helpers/storeprojects-dirs";
 
-describe("Developer node: creates a new node type", () => {
+// Live-LLM e2e: spawns the dev node and drives a real agentic CLI to author
+// a node — minutes-long and dependent on a working local model, so it would
+// flake CI. Opt in explicitly with BRAIN_E2E_LLM=1 (skipped by default,
+// including the slow bootstrap below).
+describe.skipIf(!process.env.BRAIN_E2E_LLM)("Developer node: creates a new node type", () => {
   let brain: BrainService;
   let createdWorkspace: string | undefined;
 

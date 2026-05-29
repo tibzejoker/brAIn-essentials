@@ -1,7 +1,12 @@
 {
   "name": "brain",
   "description": "Central consciousness node. Inspects the network, manages node lifecycle, rewires subscriptions, reflects, and orchestrates the entire brAIn network. Has root authority.",
-  "tags": ["consciousness", "orchestrator", "llm", "root"],
+  "tags": [
+    "consciousness",
+    "orchestrator",
+    "llm",
+    "root"
+  ],
   "default_authority": 2,
   "default_priority": 10,
   "ports": {
@@ -11,16 +16,30 @@
         "inputSchema": {
           "type": "object",
           "properties": {
-            "content": { "type": "string", "description": "The message body (free text)." },
-            "title": { "type": "string", "description": "Short headline when escalating as an alert." },
-            "criticality": { "type": "number", "description": "Optional priority hint (0–9). Higher = more urgent." },
-            "source_context": { "type": "string", "description": "Where this came from, when not obvious from the topic." }
+            "content": {
+              "type": "string",
+              "description": "The message body (free text)."
+            },
+            "title": {
+              "type": "string",
+              "description": "Short headline when escalating as an alert."
+            },
+            "criticality": {
+              "type": "number",
+              "description": "Optional priority hint (0–9). Higher = more urgent."
+            },
+            "source_context": {
+              "type": "string",
+              "description": "Where this came from, when not obvious from the topic."
+            }
           }
         }
       },
       "reset_signal": {
         "description": "Wipe the brain's short-term context (conversation buffer + iteration count) so the next turn starts fresh. No payload required.",
-        "inputSchema": { "type": "object" }
+        "inputSchema": {
+          "type": "object"
+        }
       }
     },
     "outputs": {
@@ -31,15 +50,23 @@
   },
   "default_port_bindings": {
     "inputs": {
-      "brain_input": ["chat.input", "brain.input", "alerts.*"],
-      "reset_signal": ["chat.reset"]
+      "brain_input": [
+        "chat.input",
+        "brain.input",
+        "alerts.*"
+      ],
+      "reset_signal": [
+        "chat.reset"
+      ]
     },
     "outputs": {
-      "brain_response": ["chat.response"]
+      "brain_response": [
+        "chat.response"
+      ]
     }
   },
-  "default_subscriptions": [],
-  "default_publishes": ["chat.response"],
   "has_ui": true,
-  "supports_transport": ["process"]
+  "supports_transport": [
+    "process"
+  ]
 }
