@@ -1,11 +1,28 @@
 {
   "name": "clock",
   "description": "Publishes current time on time.tick every second",
-  "tags": ["utility", "time"],
+  "tags": [
+    "utility",
+    "time"
+  ],
   "default_authority": 0,
   "default_priority": 1,
-  "default_subscriptions": [],
-  "default_publishes": ["time.tick"],
+  "ports": {
+    "outputs": {
+      "time.tick": {
+        "description": "time.tick"
+      }
+    }
+  },
+  "default_port_bindings": {
+    "outputs": {
+      "time.tick": [
+        "time.tick"
+      ]
+    }
+  },
   "interval": "1s",
-  "supports_transport": ["process"]
+  "supports_transport": [
+    "process"
+  ]
 }

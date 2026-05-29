@@ -1,10 +1,27 @@
 {
   "name": "echo",
   "description": "Logs received messages and republishes them on echo.output",
-  "tags": ["utility", "debug"],
+  "tags": [
+    "utility",
+    "debug"
+  ],
   "default_authority": 0,
   "default_priority": 1,
-  "default_subscriptions": [],
-  "default_publishes": ["echo.output"],
-  "supports_transport": ["process"]
+  "ports": {
+    "outputs": {
+      "echo.output": {
+        "description": "echo.output"
+      }
+    }
+  },
+  "default_port_bindings": {
+    "outputs": {
+      "echo.output": [
+        "echo.output"
+      ]
+    }
+  },
+  "supports_transport": [
+    "process"
+  ]
 }

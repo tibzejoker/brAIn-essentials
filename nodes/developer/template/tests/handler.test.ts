@@ -11,14 +11,16 @@ function makeCtx(messages: Message[] = []): NodeContext {
     publish: vi.fn((topic: string, msg: { payload: { content: string } }) => {
       published.push({ topic, content: msg.payload.content });
     }),
+    emit_port: vi.fn(),
     subscribe: vi.fn(),
     unsubscribe: vi.fn(),
-    callLLM: vi.fn(),
-    callTool: vi.fn(),
-    readFile: vi.fn(),
-    writeFile: vi.fn(),
-    listFiles: vi.fn(),
+    spawn: vi.fn(),
+    kill: vi.fn(),
+    // Preferred LLM surface — model resolution / failover handled for you.
+    llm: { text: vi.fn(), tool: vi.fn(), tools: vi.fn(), agent: vi.fn() },
+    tools: { list: vi.fn(() => []), listForNode: vi.fn(() => []) },
     state: {},
+    dataDir: "/tmp/template-test",
     log: vi.fn(),
     node: {
       id: "test", type: "test", name: "test", description: "",
@@ -28,6 +30,7 @@ function makeCtx(messages: Message[] = []): NodeContext {
     },
     iteration: 0,
     wasPreempted: false,
+    signal: new AbortController().signal,
     _published: published,
   } as unknown as NodeContext;
 }
