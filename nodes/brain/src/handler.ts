@@ -163,6 +163,51 @@ When a game (hangman, tictactoe, brainpet, …) is in a \`playing\` state:
     content: `${wakeNotice}Network iteration ${iterationState + 1}.${humanBlock}${otherBlock}${budgetNotice}`,
   });
 
+  // Skills (procedural memory): auto-retrieve what's relevant to THIS turn and
+  // inject it, the same progressive-disclosure way Claude/Hermes do. The model
+  // doesn't have to decide to use a skill — the node surfaces it at the right
+  // moment. The top match's body is injected in full (apply it); the rest are
+  // listed as awareness. Served over the bus, so this works the same on a
+  // remote brain-agent. Never fatal: if the skills service is absent, skip.
+  // Progressive disclosure, Claude/Hermes-style: inject the CATALOG (names +
+  // descriptions) and let the model decide which skill fits — it calls
+  // load_skill({name}) to pull the full instructions before acting. Model-
+  // driven selection beats a keyword guess, especially cross-language (a
+  // French question vs an English description) where keyword overlap is 0.
+  let skillsContext = "";
+  let skillsAvailable = false;
+  try {
+    const taskText = (humanMessages.length ? humanMessages : filteredMessages).map(formatMessage).join("\n").slice(0, 800);
+    const catalog = await ctx.skills.list();
+    if (catalog.length > 0 && taskText.trim()) {
+      const CATALOG_CAP = 40;
+      const shown = catalog.length <= CATALOG_CAP ? catalog : await ctx.skills.search(taskText, 10);
+      if (shown.length > 0) {
+        const list = shown.map((s) => `- ${s.name}: ${s.description}`).join("\n");
+        // Auto-inject the body of the semantically-best match (search is now
+        // embedding-based, so it works cross-language). Small models won't
+        // reliably call load_skill on their own (proven: 0/7 with gemma4:e4b),
+        // so the procedure goes straight in front of them. Catalog + load_skill
+        // stay for awareness / pulling OTHER skills (capable models).
+        let bodyBlock = "";
+        let applied: string | null = null;
+        try {
+          const best = (await ctx.skills.search(taskText, 1))[0];
+          if (best) {
+            const top = await ctx.skills.load(best.name);
+            if (top?.content) { bodyBlock = `\n\n=== MOST RELEVANT SKILL: ${best.name} (follow it for this reply) ===\n${top.content}`; applied = best.name; }
+          }
+        } catch { /* keep catalog-only */ }
+        skillsContext = `\n\n=== SKILL LIBRARY (procedural know-how) ===\n`
+          + `The most relevant skill's full instructions are included below — follow them. For any OTHER skill that fits, call load_skill({name}) before acting.\n${list}${bodyBlock}`;
+        skillsAvailable = true;
+        ctx.log("info", "skills: injected", { catalog: shown.length, applied });
+      }
+    }
+  } catch {
+    // Skills service unavailable (no NATS responder / nothing indexed) — skip.
+  }
+
   // Keep the rolling window tight. Local 4–8B models (gemma4, qwen2,
   // etc.) get noticeably less reliable at picking a tool once the
   // history grows past ~10 turns of repetitive "Network iteration N"
@@ -202,6 +247,18 @@ When a game (hangman, tictactoe, brainpet, …) is in a \`playing\` state:
       },
     },
   };
+  // Let the model pull a skill's full body on demand (model-driven selection).
+  if (skillsAvailable) {
+    dispatchTools.load_skill = {
+      description: "Read a skill's full instructions (its body) before acting. Cheap — call it whenever a listed skill MIGHT relate to the request (how to respond, tone/language, a procedure, operating a node). The catalog line is only a hint; load it to get the actual rules, then follow them.",
+      inputSchema: {
+        type: "object",
+        required: ["name"],
+        additionalProperties: false,
+        properties: { name: { type: "string", description: "Skill name exactly as listed in the SKILL LIBRARY." } },
+      },
+    };
+  }
   const networkToolByName = new Map<string, ToolDescriptor>();
   for (const t of allTools) {
     const name = sanitize(t.topic);
@@ -213,6 +270,7 @@ When a game (hangman, tictactoe, brainpet, …) is in a \`playing\` state:
   }
 
   // --- Main LLM loop ---
+  const loadedThisWake = new Set<string>();
   try {
     const resolution = ctx.llm.resolveModel();
     ctx.log("info", `LLM call → ${resolution.resolved} (${ctx.messages.length} messages, ${Object.keys(dispatchTools).length} tools)`);
@@ -225,7 +283,7 @@ When a game (hangman, tictactoe, brainpet, …) is in a \`playing\` state:
         picked = await ctx.llm.tools({
           tools: dispatchTools,
           prompt: conversation,
-          system: systemPrompt,
+          system: systemPrompt + skillsContext,
           maxTokens: 2048,
           // Inherit the facade default (2 retries): on "no tool call", it
           // re-asks the model — context-stripped — to reissue its reply as a
@@ -263,6 +321,26 @@ When a game (hangman, tictactoe, brainpet, …) is in a \`playing\` state:
         // the next wake sees the next user message and decides fresh.
         ctx.log("info", "Brain chose stop — ending wake");
         return;
+      }
+
+      if (picked.toolName === "load_skill") {
+        // Model-driven skill selection: it picked a skill from the catalog;
+        // inject the full body and loop so the next turn applies it.
+        const name = String(picked.args.name ?? "").trim();
+        if (loadedThisWake.has(name)) {
+          conversation.push({ role: "user", content: `Skill "${name}" is already loaded above — apply it now or respond.` });
+          continue;
+        }
+        loadedThisWake.add(name);
+        let body: string | null = null;
+        try { body = (await ctx.skills.load(name))?.content ?? null; } catch { body = null; }
+        if (!body) {
+          conversation.push({ role: "user", content: `No skill named "${name}". Pick one from the SKILL LIBRARY, or act without it.` });
+          continue;
+        }
+        ctx.log("info", "skills: loaded", { name });
+        conversation.push({ role: "user", content: `Loaded skill "${name}" — follow it now:\n\n${body}` });
+        continue;
       }
 
       // Delegation to a network tool — leave a short textual marker so
