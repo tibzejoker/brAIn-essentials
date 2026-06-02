@@ -110,6 +110,24 @@ await ctx.spawn({ type, name, config_overrides? })  // spawn another node
 ctx.kill(nodeId, reason?)         // stop one
 \`\`\`
 
+**Skills — procedural memory (shared across the whole network)**
+\`\`\`typescript
+await ctx.skills.list()                       // catalog (name+description) of applicable skills
+await ctx.skills.search(query, limit?)        // the ones relevant to a task
+await ctx.skills.load(name)                   // a skill's full SKILL.md body, to apply
+await ctx.skills.save(name, content)          // distil/save a personal skill (LLM-authored)
+await ctx.skills.delete(name)                 // remove a personal skill
+\`\`\`
+OPTIONAL: if your node embodies a reusable procedure, you MAY ship a
+\`skills/<name>/SKILL.md\` in its bundle, or distil one at runtime with
+\`ctx.skills.save\` after pulling off a non-trivial task. Two flavours:
+a **capability** skill (no extra frontmatter — always available once the
+lib is installed, e.g. "to fetch a URL, use http-bridge") or a
+**node-scoped** skill (add \`requires_node: <your-type>\` to the frontmatter —
+only surfaced once an instance of your node is spawned, e.g. "this node is
+running, drive it like X"). Not required; add one only if it genuinely
+helps other nodes reuse what you do.
+
 **State, storage, lifecycle**
 \`\`\`typescript
 ctx.state                         // plain object persisted across wakes (survives reboot) — your memory
