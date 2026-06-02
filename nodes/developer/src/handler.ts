@@ -713,12 +713,11 @@ function snapshotWorkspaces(
   const brain = BrainService.current;
   const out: WorkspaceSnapshot[] = [];
   for (const e of fs.readdirSync(dynamicDir, { withFileTypes: true })) {
-    if (!e.isDirectory()) continue;
-    // Include if: (a) in-progress (still has the dev- prefix from before
-    // post-spawn rename), OR (b) recorded in our created registry (the
-    // post-rename `<type_name>-<id>` form).
-    const isOurs = e.name.startsWith("dev-") || e.name in created || e.name in workspaces;
-    if (!isOurs) continue;
+    if (!e.isDirectory() || e.name.startsWith(".")) continue;
+    // List EVERY dynamic workspace on disk, not just ones this dev instance
+    // authored — so orphans (e.g. left by another session, or invalid
+    // never-registered ones) are visible and manageable. `created_by_me`
+    // still flags which ones came from this node.
     const wsPath = path.join(dynamicDir, e.name);
     if (!fs.existsSync(path.join(wsPath, "config.json"))) continue;
     const typeName = readTypeName(wsPath);
@@ -799,6 +798,49 @@ function publishWorkspaces(
     payload: { content: JSON.stringify({ items }) },
     metadata: { items, ts: new Date().toISOString() },
   });
+}
+
+/**
+ * Delete a dynamic node workspace: kill any live instance of its type,
+ * remove the `_dynamic/<slug>` folder (the scanner then unregisters the
+ * type), and drop our bookkeeping. Deletion is folder-removal — the
+ * framework owns (un)registration; we just clean the disk + instances.
+ */
+function handleDelete(
+  ctx: NodeContext,
+  msg: Message,
+  workspaces: WorkspacesState,
+  created: CreatedRegistry,
+  monorepoRoot: string,
+): void {
+  const slug = String(parseJsonContent(msg).slug ?? "").trim();
+  const fail = (error: string): void => {
+    ctx.log("warn", `dev.delete refused: ${error}`);
+    ctx.publish("dev.result", { type: "text", criticality: 2, payload: { content: JSON.stringify({ status: "delete_failed", slug, error }) } });
+  };
+  // Guard against path traversal — slug must be a plain folder name.
+  if (!slug || !/^[A-Za-z0-9._-]+$/.test(slug)) return fail("invalid slug");
+  const dynamicDir = path.join(monorepoRoot, "nodes", "_dynamic");
+  const wsPath = path.join(dynamicDir, slug);
+  if (path.dirname(wsPath) !== dynamicDir) return fail("slug escapes _dynamic");
+  if (!fs.existsSync(wsPath)) return fail("workspace not found");
+
+  // Kill any live instance of this type before pulling the type out.
+  const typeName = readTypeName(wsPath);
+  const brain = BrainService.current;
+  let killed = 0;
+  if (typeName && brain) {
+    for (const n of brain.getNetworkSnapshot()?.filter((x) => x.type === typeName) ?? []) {
+      if (brain.killNode(n.id, ctx.node.id, "dynamic node deleted via dev node")) killed += 1;
+    }
+  }
+  fs.rmSync(wsPath, { recursive: true, force: true });
+  delete workspaces[slug];
+  delete created[slug];
+  ctx.log("info", `dev.delete removed ${slug} (type ${typeName ?? "?"}, killed ${killed} instance(s))`);
+  ctx.publish("dev.result", { type: "text", criticality: 1, payload: { content: JSON.stringify({ status: "deleted", slug, type_name: typeName, killed }) } });
+  // Refresh any UI listening on dev.workspaces.
+  publishWorkspaces(ctx, monorepoRoot, workspaces, created);
 }
 
 function publishFiles(ctx: NodeContext, monorepoRoot: string, msg: Message): void {
@@ -1084,6 +1126,10 @@ export const handler: NodeHandler = async (ctx) => {
   for (const msg of ctx.messages) {
     if (msg.topic === "dev.workspaces.list") {
       publishWorkspaces(ctx, monorepoRoot, workspaces, created);
+      continue;
+    }
+    if (msg.topic === "dev.delete") {
+      handleDelete(ctx, msg, workspaces, created, monorepoRoot);
       continue;
     }
     if (msg.topic === "dev.files.tree") {
