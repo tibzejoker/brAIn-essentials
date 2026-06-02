@@ -477,17 +477,32 @@
         if (ws.registered) badges.push('<span class="badge ok">registered</span>');
         else badges.push('<span class="badge muted">not yet registered</span>');
         if (ws.instance_id) badges.push('<span class="badge live">live</span>');
+        if (!ws.created_by_me) badges.push('<span class="badge muted">external</span>');
         div.innerHTML = `
           <div class="top">
             <span class="name">${escapeHtml(ws.type_name || ws.slug)}</span>
+            <button class="ws-del" title="Delete this node (removes its folder, kills any live instance)" style="margin-left:auto;background:none;border:none;color:var(--text-dim);cursor:pointer;font-size:13px;padding:2px 6px;">✕</button>
           </div>
           <div class="slug">${escapeHtml(ws.slug)} · ${ws.files_count} files</div>
           <div class="badges">${badges.join('')}</div>
         `;
         div.addEventListener('click', () => selectWorkspace(ws.slug));
+        div.querySelector('.ws-del').addEventListener('click', (e) => {
+          e.stopPropagation();
+          deleteWorkspace(ws);
+        });
         els.wsList.appendChild(div);
       }
       els.btnImprove.disabled = !selectedSlug || !workspaces.find((w) => w.slug === selectedSlug);
+    }
+
+    function deleteWorkspace(ws) {
+      const live = ws.instance_id ? ' Its live instance will be killed.' : '';
+      if (!window.confirm(`Delete "${ws.type_name || ws.slug}"?${live}\nThis removes nodes/_dynamic/${ws.slug} from disk and unregisters the type. This cannot be undone.`)) return;
+      if (selectedSlug === ws.slug) selectedSlug = null;
+      send('dev.delete', { slug: ws.slug });
+      // Optimistic: drop it locally; dev.workspaces will reconcile shortly.
+      renderWorkspaces(workspaces.filter((w) => w.slug !== ws.slug));
     }
 
     function selectWorkspace(slug) {

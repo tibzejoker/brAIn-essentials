@@ -68,10 +68,24 @@
         }
       },
       "dev.workspaces.list": {
-        "description": "Request a snapshot of every authored workspace under nodes/_dynamic/ (registered or not). Reply on dev.workspaces.",
+        "description": "Request a snapshot of every workspace under nodes/_dynamic/ (registered or not). Reply on dev.workspaces.",
         "inputSchema": {
           "type": "object",
           "properties": {},
+          "additionalProperties": false
+        }
+      },
+      "dev.delete": {
+        "description": "Delete a dynamic node: kill any live instance of its type, remove its nodes/_dynamic/<slug> folder (the framework then unregisters the type). Payload: {slug}. Confirms on dev.result and refreshes dev.workspaces.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "slug": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "required": ["slug"],
           "additionalProperties": false
         }
       },
@@ -298,6 +312,9 @@
       ],
       "dev.workspaces.list": [
         "dev.workspaces.list"
+      ],
+      "dev.delete": [
+        "dev.delete"
       ],
       "dev.files.tree": [
         "dev.files.tree"
