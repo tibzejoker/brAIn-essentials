@@ -24,6 +24,85 @@ function formatMessage(msg: { from: string; topic: string; criticality: number; 
   return `[from:${msg.from.slice(0, 8)} topic:${msg.topic} crit:${msg.criticality}] ${JSON.stringify(payload)}`;
 }
 
+/** Topic carrying correlated speech from the perception stack (voice+gaze → intent). */
+const SPOKEN_TOPIC = "intent.detected";
+/** Topic fired when a speaker addresses the AI: the question plus the
+ *  conversation overheard since the last addressed exchange. */
+const ADDRESSED_TOPIC = "intent.addressed";
+
+/** "who → whom" label for one utterance. Unknown targets are stated as
+ *  unknown rather than omitted — the model must not guess an addressee. */
+function speechTargetLabel(kind: unknown, targetName: string | null): string {
+  if (kind === "camera") return "to YOU";
+  if (kind === "person") return targetName ? `to ${targetName}` : "to another person";
+  if (kind === "scene") return targetName ? `while looking at: ${targetName}` : "while looking at the scene";
+  return "to: unknown (could not tell who they were addressing)";
+}
+
+/**
+ * Render an intent.addressed message as an explicit English conversation
+ * block: every overheard line is labeled `Speaker (to whom): "…"`, then the
+ * line addressed to the AI, with an instruction to answer THAT line using
+ * the rest as context only.
+ */
+function formatAddressed(msg: { payload: unknown; metadata?: Record<string, unknown> }): string {
+  let data = (msg.metadata ?? {}) as Record<string, unknown>;
+  if (!data.question) {
+    const payload = msg.payload as TextPayload;
+    try {
+      data = JSON.parse(String(payload.content)) as Record<string, unknown>;
+    } catch {
+      return "";
+    }
+  }
+  const question = data.question as Record<string, unknown> | undefined;
+  if (!question || typeof question.text !== "string") return "";
+  const context = Array.isArray(data.context) ? data.context as Array<Record<string, unknown>> : [];
+  const dropped = Number(data.dropped_utterances ?? 0);
+
+  const lines: string[] = [];
+  lines.push("SOMEONE JUST SPOKE TO YOU (heard through your perception: microphone + camera gaze tracking).");
+  if (context.length > 0) {
+    lines.push("");
+    lines.push(`Conversation overheard since your last exchange (oldest first${dropped > 0 ? `; ${dropped} earlier line(s) omitted` : ""}):`);
+    for (const u of context) {
+      const speaker = typeof u.speaker === "string" && u.speaker ? u.speaker : "Unknown speaker";
+      lines.push(`  ${speaker} (${speechTargetLabel(u.target_kind, typeof u.target_name === "string" ? u.target_name : null)}): "${String(u.text ?? "")}"`);
+    }
+  }
+  const speaker = typeof question.source_name === "string" && question.source_name ? question.source_name : "Unknown speaker";
+  lines.push("");
+  lines.push("Now addressed to YOU — this is the line to answer:");
+  lines.push(`  ${speaker} (looking at you): "${question.text}"`);
+  lines.push("");
+  lines.push("Answer that last line via `respond`, using the overheard lines as context only. Do not repeat their words back.");
+  return lines.join("\n");
+}
+
+/**
+ * Render an intent.detected message as natural speech instead of raw JSON.
+ * The correlator ships `{source_name, text, target_kind, target_name, …}`
+ * in metadata (and JSON-encoded in payload.content as a fallback). Dumping
+ * that JSON at the model makes it "relay" the sentence back like a service
+ * callback — formatting it as reported speech makes it answer the human.
+ * Returns "" when the shape is unrecognized (caller falls back to formatMessage).
+ */
+function formatSpoken(msg: { payload: unknown; metadata?: Record<string, unknown> }): string {
+  let intent = (msg.metadata ?? {}) as Record<string, unknown>;
+  if (typeof intent.text !== "string") {
+    const payload = msg.payload as TextPayload;
+    try {
+      intent = JSON.parse(String(payload.content)) as Record<string, unknown>;
+    } catch {
+      return "";
+    }
+  }
+  if (typeof intent.text !== "string") return "";
+  const source = typeof intent.source_name === "string" && intent.source_name ? intent.source_name : "Someone";
+  const targetName = typeof intent.target_name === "string" ? intent.target_name : null;
+  return `${source} said (${speechTargetLabel(intent.target_kind, targetName)}): "${intent.text}"`;
+}
+
 
 export const handler: NodeHandler = async (ctx) => {
   const config = getConfig(ctx.node.config_overrides ?? {} as Record<string, unknown>);
@@ -46,6 +125,17 @@ export const handler: NodeHandler = async (ctx) => {
     ctx.messages = ctx.messages.filter((m) => m.topic !== "chat.reset");
     if (ctx.messages.length === 0) return;
   }
+
+  // Infra telemetry (hub snapshots, agent discovery) must never cost an
+  // LLM call. It matters beyond cost: these land in the mailbox at any
+  // time, resetting the runner's wake budget — an unfiltered snapshot
+  // arriving right after a `respond` re-invokes the handler, and a small
+  // model, seeing its own reply end on a question, happily answers
+  // itself. Drop them before deciding whether there is anything to
+  // think about.
+  const INFRA_NOISE = /^brain\.(network|agents)\./;
+  ctx.messages = ctx.messages.filter((m) => !INFRA_NOISE.test(m.topic));
+  if (ctx.messages.length === 0 && !ctx.state._woke_from_sleep) return;
 
   // The brain is the sole NLU gateway — every human input (whether
   // typed in the main chat or in a game UI's input field) reaches us
@@ -99,7 +189,7 @@ Your role is to be the **router and relay** between the human user and the speci
 ## Routing duty (READ CAREFULLY)
 Every incoming message falls in one of three buckets. Decide which BEFORE picking a tool.
 
-1. **Human input** (\`chat.input\`) → either answer directly with \`respond\` OR delegate to the right service tool.
+1. **Human input** — typed (\`chat.input\`) or SPOKEN near you (\`intent.detected\` / \`intent.addressed\`). Spoken input is transcribed with who-was-talking-to-whom labels: \`Alex (to Sam): "…"\` means Alex spoke to Sam (you merely overheard it), \`Alex (to YOU): "…"\` or "looking at you" means Alex addressed YOU, and \`(to: unknown)\` means the perception stack could not tell who was addressed. Answer ONLY what is addressed to you, using overheard lines as context. Treat addressed speech exactly like a typed message from that person: answer with \`respond\` or delegate to the right service tool. NEVER repeat the person's own words back at them — answer the question they asked.
 2. **Service callback** — a message arriving as a *consequence* of an action you delegated (e.g. you called \`game_hangman_command\` and now \`game.hangman.event\` / \`game.hangman.state\` lands). If the content matters to the user, **YOU MUST** relay it with \`respond\`. The services do not talk to the chat directly — you are the bridge.
 3. **Pure observation** — an event that genuinely doesn't concern the user (technical state ticks, internal heartbeats, duplicates of something already relayed). Call \`stop\` to end the wake without spamming the chat.
 
@@ -149,10 +239,23 @@ When a game (hangman, tictactoe, brainpet, …) is in a \`playing\` state:
   // happens to have arrived in the same wake. Bundling them in one blob
   // lets gemma pick the wrong priority and respond about a game event
   // while the player's actual move ("q") sits unprocessed.
+  const HUMAN_TOPICS = new Set(["chat.input", SPOKEN_TOPIC, ADDRESSED_TOPIC]);
   const humanMessages = filteredMessages.filter((m) => m.topic === "chat.input");
-  const otherMessages = filteredMessages.filter((m) => m.topic !== "chat.input");
-  const humanBlock = humanMessages.length > 0
-    ? `\n\n=== HUMAN INPUT (highest priority — handle FIRST) ===\n${humanMessages.map(formatMessage).join("\n")}`
+  const spokenMessages = filteredMessages.filter((m) => m.topic === SPOKEN_TOPIC);
+  const addressedMessages = filteredMessages.filter((m) => m.topic === ADDRESSED_TOPIC);
+  const otherMessages = filteredMessages.filter((m) => !HUMAN_TOPICS.has(m.topic));
+  const humanLines = [
+    ...humanMessages.map(formatMessage),
+    // Speech heard through the perception stack is human input too —
+    // formatted as reported speech so the model answers instead of
+    // echoing the correlator's JSON back at the speaker.
+    ...spokenMessages.map((m) => formatSpoken(m) || formatMessage(m)),
+    // Addressed speech carries the overheard conversation delta: an
+    // explicit who-said-what-to-whom block ending on the line to answer.
+    ...addressedMessages.map((m) => formatAddressed(m) || formatMessage(m)),
+  ];
+  const humanBlock = humanLines.length > 0
+    ? `\n\n=== HUMAN INPUT (highest priority — handle FIRST) ===\n${humanLines.join("\n")}`
     : "";
   const otherBlock = otherMessages.length > 0
     ? `\n\n=== Other signals (service callbacks, observations) ===\n${otherMessages.map(formatMessage).join("\n")}`
