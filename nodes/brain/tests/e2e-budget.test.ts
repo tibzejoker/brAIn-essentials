@@ -1,18 +1,19 @@
 /**
- * E2E: LLM budget system.
+ * E2E: LLM budget system (reactive runtime).
  *
- * Spawns a brain node with a small budget (3 iterations) and a prompt
- * that tells it to report its iteration count each turn.
+ * Since the "purely reactive runtime" refactor there is no sleep/wake:
+ * a handler returns and the runner parks the node; the next subscribed
+ * bus message drives it again. The budget caps chained iterations
+ * within one wake and is surfaced to the LLM via the system hint.
  * Verifies:
- *   1. The LLM runs exactly up to the budget
- *   2. The LLM sees the budget info in its system hint
- *   3. The node is force-slept after budget exhaustion
+ *   1. The LLM sees the budget info in its system hint (responds TURN 1)
+ *   2. One inbound message = one wake — no runaway extra iterations
+ *   3. A new message re-drives the parked node with a fresh budget
  *
  * Requires: Ollama running with the test model.
  */
 import { describe, it, expect, afterAll, afterEach } from "vitest";
 import { BrainService, LLMRegistry } from "@brain/core";
-import { NodeState } from "@brain/sdk";
 import * as fs from "fs";
 import * as path from "path";
 import { allStoreprojectNodeDirs } from "./_helpers/storeprojects-dirs";
@@ -20,7 +21,9 @@ import { allStoreprojectNodeDirs } from "./_helpers/storeprojects-dirs";
 const TEST_MODEL = "ollama/gemma4:e4b";
 const DATA_DIR = path.resolve(__dirname, "..", "..", "..", "..", "..", "brAIn", "data");
 const MEM_PATH = path.join(DATA_DIR, "memory.json");
-const MAX_WAIT = 60_000;
+// Generous: when the whole monorepo suite runs in parallel, several
+// suites hammer the same local Ollama and a turn can take >60s.
+const MAX_WAIT = 120_000;
 
 async function isOllamaAvailable(): Promise<boolean> {
   try {
@@ -66,7 +69,7 @@ describe("e2e: LLM budget system", async () => {
     }
   });
 
-  it("force-sleeps the LLM after budget is exhausted", async () => {
+  it("runs one wake per inbound message and parks — budget hint injected", async () => {
     if (hadMemory) fs.copyFileSync(MEM_PATH, memBackup);
     if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
     fs.writeFileSync(MEM_PATH, "{}");
@@ -86,7 +89,6 @@ describe("e2e: LLM budget system", async () => {
         response_topic: "budget.response",
         max_steps: 1,
         max_iterations: BUDGET,
-        forced_sleep: "5s",
       },
     });
 
@@ -96,14 +98,16 @@ describe("e2e: LLM budget system", async () => {
     brain.bus.publish({
       from: "test", topic: "budget.test", type: "text", criticality: 3,
       payload: {
-        content: "Each time you are called, respond with ONLY the text 'TURN X' where X is the iteration number from your system hint. Do nothing else.",
+        content: "Each time you are called, use the respond tool with ONLY the text 'TURN X' where X is the iteration number from your system hint. NEVER use the stop tool — always respond, on every single turn, until you are put to sleep.",
       },
     });
 
-    // Wait for the node to be force-slept
-    const slept = await waitFor(
-      () => brain?.instanceRegistry.get(node.id)?.state === NodeState.SLEEPING,
+    // Wait for the wake to produce a response
+    const answered = await waitFor(
+      () => (brain?.bus.getMessageHistory({ topic: "budget.response", last: 5 }) ?? []).length > 0,
     );
+    // Give a (buggy) runaway loop time to show up before we count iterations
+    await delay(8000);
 
     // Check what happened
     const logs = brain.getNodeLogs(node.id, 30);
@@ -114,9 +118,10 @@ describe("e2e: LLM budget system", async () => {
     for (const l of logs) console.log(`    [${l.level}] ${l.message.slice(0, 120)}`);
     console.log("  Responses:", responses.map((m) => (m.payload as { content: string }).content.slice(0, 60)));
 
-    // The node should have run exactly BUDGET iterations then slept
-    expect(slept, "Node should be sleeping after budget exhaustion").toBe(true);
-    expect(iterations.length).toBeLessThanOrEqual(BUDGET + 1); // +1 tolerance for timing
+    // One message → one wake, then the node parks. No extra iterations
+    // may happen without new inbound messages.
+    expect(answered, "Node should have responded to the message").toBe(true);
+    expect(iterations.length).toBeLessThanOrEqual(BUDGET); // bounded by the budget, no runaway
 
     // Verify the LLM saw the budget hint (at least one response should mention a turn)
     const responseTexts = responses.map((m) => (m.payload as { content: string }).content);
@@ -141,7 +146,6 @@ describe("e2e: LLM budget system", async () => {
         response_topic: "reset.response",
         max_steps: 3,
         max_iterations: 2,
-        forced_sleep: "3s",
       },
     });
 
@@ -158,7 +162,7 @@ describe("e2e: LLM budget system", async () => {
       const r = brain?.bus.getMessageHistory({ topic: "reset.response", last: 5 }) ?? [];
       return r.length > 0;
     });
-    await delay(5000); // let it force-sleep and wake
+    await delay(5000); // let the wake fully end and the node park
 
     // Second message — should reset budget
     brain.bus.publish({
