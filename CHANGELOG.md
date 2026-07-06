@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.1](https://github.com/tibzejoker/brAIn-essentials/compare/v1.0.0...v1.0.1) (2026-07-06)
+
+
+### Bug Fixes
+
+* **brain:** align the budget e2e with the reactive runtime ([6f5b166](https://github.com/tibzejoker/brAIn-essentials/commit/6f5b16634bfe43c05cb08c0fd893986f53a372f3))
+
 ## 1.0.0 (2026-07-03)
 
 
